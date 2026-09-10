@@ -1,0 +1,12 @@
+{
+  "game_path": "",
+  "data_folder": "Modded Cars",
+  "addon_folder": "Addon Cars",
+  "mod_folder": "Modded Cars",
+  "remember_default_path": false,
+  "dismiss_fla_warning": false,
+  "is_configured": false,
+  "language": "en",
+  "default_language": "en",
+  "card_density": "comfortable"
+}

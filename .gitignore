@@ -1,0 +1,47 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*.class
+
+# PyInstaller / Build outputs
+build/
+dist/
+*.egg-info/
+*.egg
+*.exe
+
+
+# Backups & test snapshots
+backups/
+_legacy_game_backups/
+*.bak
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# IDE & Editor artifacts
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+.commandcode/
+
+# OS-specific files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+desktop.ini
+.BIN/
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Logs & temp files
+*.log
+tmp/
+temp/

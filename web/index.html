@@ -1,0 +1,1230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GTASA Vehicle Mod Manager</title>
+  <link rel="stylesheet" href="style.css?v=20260910-inspector1">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Top Header -->
+    <header class="navbar">
+      <div class="brand">
+        <div class="brand-badge">GTASA</div>
+        <div class="brand-text">
+          <h1><span data-i18n="brand.title">Vehicle Mod Manager</span> <span class="version-tag" data-i18n="brand.version">Beta</span></h1>
+        </div>
+      </div>
+
+      <div class="header-status">
+        <div class="status-pill" id="gamePathPill" title="Current game root directory" data-i18n-title="header.gamePathTitle">
+          <span class="dot green"></span>
+          <span id="gamePathText" data-i18n="status.detecting">Detecting...</span>
+        </div>
+        <button class="btn btn-secondary" id="btnOpenPathModal" style="padding:4px 10px; font-size:12px;" title="Change GTA:SA Root Directory" data-i18n="header.changeDir" data-i18n-title="header.changeDirTitle">📁 Change Directory</button>
+        <div class="status-pill" id="flaStatusPill" title="Fastman92 Limit Adjuster">
+          <span class="dot green"></span>
+          <span id="flaStatusText" data-i18n="status.detectingFla">FLA 92: Detecting...</span>
+        </div>
+        <button class="btn btn-secondary" id="btnOpenIdPoolHeader" style="padding:4px 10px; font-size:12px;" title="Inspect Free Model IDs & Allocation" data-i18n="header.idPool" data-i18n-title="header.idPoolTitle">🆔 ID Pool Analyzer</button>
+
+        <!-- Language Switcher (hidden in English-only release) -->
+        <div class="lang-selector-wrap" style="display:none;">
+          <select id="selectAppLanguage"></select>
+          <button id="btnSetDefaultLang"></button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Navigation Tabs -->
+    <nav class="nav-tabs">
+      <button class="tab-btn active" data-tab="modsTab">
+        <span class="icon">🚗</span> <span data-i18n="nav.mods">Installed Vehicles</span>
+      </button>
+      <button class="tab-btn" data-tab="installTab">
+        <span class="icon">📦</span> <span data-i18n="nav.installer">Install Vehicle Mod</span>
+      </button>
+      <button class="tab-btn" data-tab="inspectorTab">
+        <span class="icon">🔬</span> <span data-i18n="nav.inspector">Vehicle Inspector</span>
+      </button>
+      <button class="tab-btn" data-tab="baselineTab">
+        <span class="icon">🛡️</span> <span data-i18n="nav.baseline">Baseline & Health</span>
+      </button>
+      <button class="tab-btn" data-tab="readmeParserTab">
+        <span class="icon">📝</span> <span data-i18n="nav.readmeLab">Readme Lab</span>
+      </button>
+      <button class="tab-btn" id="btnNavOpenIdPool" style="margin-left:auto; border-color:rgba(56,189,248,0.3);">
+        <span class="icon">🆔</span> <span data-i18n="nav.idPoolTab">Free ID Analyzer</span>
+      </button>
+    </nav>
+
+    <!-- Main Content Panels -->
+    <main class="content-area">
+      <!-- FLA Missing Warning Banner -->
+      <div id="flaWarningBanner" class="fla-warning-banner" style="display:none;">
+        <div class="fla-warning-content">
+          <div class="fla-warning-icon">ℹ️</div>
+          <div class="fla-warning-text">
+            <div class="fla-warning-title" data-i18n="fla.bannerTitle">Fastman92 Limit Adjuster (FLA) not detected</div>
+            <div class="fla-warning-desc" data-i18n-html="fla.bannerDesc">FLA main file <code>fastman92limitAdjuster.asi</code> was not found; the .ini config only takes effect alongside the main file. The game is running with vanilla limits: standard replacement vehicles work normally; install the full FLA if you need extra tuning parts or custom audio.</div>
+          </div>
+        </div>
+        <div class="fla-warning-actions">
+          <button class="btn btn-sm btn-secondary" id="btnDismissFlaSession" data-i18n="fla.statusDismiss">Dismiss</button>
+          <button class="btn btn-sm btn-outline-danger" id="btnDismissFlaPermanent" title="Remember this choice and stop showing this notice at startup" data-i18n="fla.statusIgnore" data-i18n-title="fla.statusIgnoreTitle">Don't Show Again</button>
+        </div>
+      </div>
+
+      <!-- 7-Zip Missing Warning Banner -->
+      <div id="sevenZipWarningBanner" class="fla-warning-banner" style="display:none;">
+        <div class="fla-warning-content">
+          <div class="fla-warning-icon">📦</div>
+          <div class="fla-warning-text">
+            <div class="fla-warning-title" data-i18n="sevenzip.bannerTitle">7-Zip not found</div>
+            <div class="fla-warning-desc" data-i18n-html="sevenzip.bannerDesc">ZIP archives still install without 7-Zip. RAR / 7Z require a local 7-Zip install. After installing, click Recheck. Site: <code>https://www.7-zip.org/</code></div>
+          </div>
+        </div>
+        <div class="fla-warning-actions">
+          <button class="btn btn-sm btn-primary" id="btnDownloadSevenZip" data-i18n="sevenzip.btnDownload">Open 7-Zip website</button>
+          <button class="btn btn-sm btn-secondary" id="btnRecheckSevenZip" data-i18n="sevenzip.btnRecheck">Recheck</button>
+          <button class="btn btn-sm btn-secondary" id="btnDismissSevenZipSession" data-i18n="sevenzip.btnDismiss">Dismiss</button>
+        </div>
+      </div>
+
+      <!-- Vanilla Vehicle List Unavailable Warning Banner -->
+      <div id="vanillaListWarningBanner" class="fla-warning-banner" style="display:none;">
+        <div class="fla-warning-content">
+          <div class="fla-warning-icon">⚠️</div>
+          <div class="fla-warning-text">
+            <div class="fla-warning-title" data-i18n="vanilla.bannerTitle">Vanilla vehicle list could not be loaded</div>
+            <div class="fla-warning-desc" data-i18n-html="vanilla.bannerDesc">The vanilla vehicle list is unavailable, so duplicate-name checking is disabled. To avoid creating a new vehicle whose name collides with a vanilla model, addon-mode installs are blocked; replacement installs are unaffected. Click Reload to try again.</div>
+          </div>
+        </div>
+        <div class="fla-warning-actions">
+          <button class="btn btn-sm btn-primary" id="btnRetryVanillaList" data-i18n="vanilla.btnRetry">Reload</button>
+        </div>
+      </div>
+
+      <!-- TAB 1: Installed Mods -->
+      <section id="modsTab" class="tab-panel active">
+        <!-- Sub-partition Switcher & Directory Location Bar -->
+        <div class="mod-partition-container">
+          <div class="mod-partition-bar">
+            <button class="partition-tab active" id="partitionReplaceBtn" data-partition="replace">
+              <span class="partition-icon">🚗</span>
+              <span class="partition-label" data-i18n="mods.partitionReplace">Replacement Mods</span>
+              <span class="partition-badge" id="replaceCountBadge">0</span>
+            </button>
+            <button class="partition-tab" id="partitionAddonBtn" data-partition="addon">
+              <span class="partition-icon">➕</span>
+              <span class="partition-label" data-i18n="mods.partitionAddon">Addon Mods</span>
+              <span class="partition-badge" id="addonCountBadge">0</span>
+            </button>
+          </div>
+
+          <!-- Directory Location & Preview -->
+          <div class="partition-folder-bar" id="partitionFolderBar">
+            <div class="folder-preview-group">
+              <span class="folder-prefix-label" id="partitionFolderLabel" data-i18n="mods.folderPrefixReplace">📁 Replacement Folder:</span>
+              <span class="folder-path-badge" id="partitionFolderPathText" title="Click to open this folder" data-i18n-title="mods.clickOpenFolder">modloader\Modded Cars</span>
+            </div>
+            <div class="folder-btn-group">
+              <button type="button" class="btn btn-secondary btn-sm" id="btnOpenCurrentFolder" title="Open this directory in Windows File Explorer" data-i18n-title="mods.openFolderTitle">
+                <span>📂</span> <span data-i18n="mods.btnOpenFolder">Open</span>
+              </button>
+              <button type="button" class="btn btn-secondary btn-sm" id="btnChangeCurrentFolder" title="Change mod directory for this partition" data-i18n-title="mods.editFolderTitle">
+                <span>✏️</span> <span data-i18n="mods.btnChangeFolder">Change Folder</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="toolbar">
+          <div class="search-box">
+            <input type="text" id="modSearchInput" placeholder="Search mod, author, model, or tuning parts..." data-i18n-placeholder="mods.searchPlaceholder">
+          </div>
+          <div class="filter-chips">
+            <button class="chip active" data-filter="all" data-i18n="mods.filterAll">All</button>
+            <button class="chip" data-filter="has_handling" data-i18n="mods.filterHandling">Handling</button>
+            <button class="chip" data-filter="has_tuning" data-i18n="mods.filterTuning">Tuning</button>
+            <button class="chip" data-filter="has_risk" data-i18n="mods.filterRisk">⚠️ Crash Risk</button>
+            <button class="chip" data-filter="has_special" data-i18n="mods.filterSpecial">FLA Special Features</button>
+          </div>
+          <div class="density-toggle" id="densityToggle" role="group" title="Card density" data-i18n-title="mods.densityToggleTitle">
+            <button type="button" class="density-btn" data-density="comfortable" title="Comfortable view (larger cards, full info)" data-i18n-title="mods.densityComfortableTitle">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M2 2.6h5v5H2v-5zm7 0h5v5H9v-5zM2 9.4h5v5H2v-5zm7 0h5v5H9v-5z"/></svg>
+            </button>
+            <button type="button" class="density-btn" data-density="compact" title="Compact view (smaller cards, path hidden)" data-i18n-title="mods.densityCompactTitle">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M2 2h3.4v3.4H2V2zm4.3 0h3.4v3.4H6.3V2zm4.3 0H14v3.4h-3.4V2zM2 6.3h3.4v3.4H2V6.3zm4.3 0h3.4v3.4H6.3V6.3zm4.3 0H14v3.4h-3.4V6.3zM2 10.6h3.4V14H2v-3.4zm4.3 0h3.4V14H6.3v-3.4zm4.3 0H14V14h-3.4v-3.4z"/></svg>
+            </button>
+          </div>
+          <button class="btn btn-primary" id="btnGoToInstallTab" style="white-space:nowrap;" data-i18n="mods.btnInstallNew">➕ Install Mod</button>
+          <button class="btn btn-secondary" id="refreshModsBtn" data-i18n="mods.refreshBtn">🔄 Refresh</button>
+        </div>
+
+        <div class="mod-grid" id="modGrid">
+          <div class="loading-spinner" data-i18n="mods.loading">Scanning ModLoader vehicle mods...</div>
+        </div>
+      </section>
+
+      <!-- TAB 2: Mod Inspector & Simulator -->
+      <section id="inspectorTab" class="tab-panel">
+        <div class="inspector-header">
+          <div class="inspector-title">
+            <h2 id="inspectModName" data-i18n="inspect.titleDefault">Select a mod to inspect</h2>
+            <span class="author-tag" id="inspectAuthor">--</span>
+          </div>
+          <div class="inspector-actions">
+            <button class="btn btn-warning" id="btnDryRun" disabled data-i18n="inspect.btnDryRun">⚡ Dry-Run Test</button>
+            <button class="btn btn-primary" id="btnApplyMerge" disabled data-i18n="inspect.btnApplyMerge">💾 Apply & Merge</button>
+            <button class="btn btn-secondary" id="btnRenameCurrentMod" disabled title="Rename this mod folder (merged configs are untouched)" data-i18n="inspect.btnRenameMod" data-i18n-title="inspect.btnRenameModTitle">✏️ Rename Folder</button>
+            <span class="actions-separator" aria-hidden="true"></span>
+            <button class="btn btn-danger-soft" id="btnDeleteCurrentMod" disabled title="Permanently delete mod folder and revert configurations" data-i18n="inspect.btnDeleteMod" data-i18n-title="inspect.btnDeleteModTitle">🗑️ Delete Mod</button>
+          </div>
+        </div>
+
+        <div class="inspector-layout">
+          <!-- Left Column: Specs, Visuals, Tuning -->
+          <div class="inspector-left">
+            <!-- Target Vehicle Info Card (vehicles.ide) -->
+            <div class="card target-car-card" id="cardVehiclesIde">
+              <div class="card-header">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <h3 data-i18n="inspect.targetCardTitle">🎯 Target Vehicle</h3>
+                  <span class="badge" id="targetIdBadge" data-i18n="inspect.targetIdBadgeDefault">ID: --</span>
+                </div>
+                <div class="card-header-actions">
+                  <button type="button" class="btn btn-secondary btn-sm btn-edit-toggle" id="btnToggleEditVehiclesIde" data-i18n="inspect.btnEdit">✏️ Edit</button>
+                  <button type="button" class="btn btn-secondary btn-sm btn-edit-toggle" id="btnToggleEditFxtName" data-i18n="inspect.btnEditFxt" data-i18n-title="inspect.btnEditFxtTitle" title="Edit in-game display name (writes to mod .fxt file)">🔤 Name</button>
+                </div>
+              </div>
+              <!-- FXT display-name editor -->
+              <div class="card-edit-body" id="fxtEditContainer" style="display:none; padding:10px 14px;">
+                <label for="inputFxtName" class="form-label" data-i18n="inspect.fxtEditLabel">In-game display name (written to the mod .fxt file, auto-loaded by ModLoader):</label>
+                <div class="input-with-btn">
+                  <input type="text" id="inputFxtName" class="form-control" maxlength="64" spellcheck="false" style="flex:1;">
+                  <button type="button" class="btn btn-primary btn-sm" id="btnSaveFxtName" data-i18n="inspect.btnSaveFxt">💾 Save Name</button>
+                </div>
+                <div class="field-hint" id="fxtEditKeyHint" style="margin-top:4px;"></div>
+              </div>
+              <!-- Multi-Vehicle Selector Pills in Inspector (shown when mod has multiple vehicles) -->
+              <div id="inspectorMultiVehicleBar" class="inspector-vehicle-switcher" style="display:none;">
+                <span class="switcher-label" data-i18n="inspect.switcherLabel">🚘 Inspect Vehicle:</span>
+                <div class="switcher-tabs" id="inspectorVehicleTabs">
+                  <!-- Dynamic vehicle buttons -->
+                </div>
+              </div>
+
+              <!-- Preview State -->
+              <div class="target-car-body" id="vehiclesIdePreviewContainer">
+                <div class="car-identity-row">
+                  <div class="identity-left">
+                    <div class="mod-card-type inspector-type-tile" id="targetVehicleTypeIcon" aria-hidden="true"></div>
+                    <div class="identity-main">
+                      <span class="identity-name" id="targetVanillaName">--</span>
+                      <span class="identity-model" id="targetModelCode">--</span>
+                    </div>
+                  </div>
+                  <div class="identity-side">
+                    <span class="identity-shop" id="identityShopWrap" hidden>
+                      <span class="meta-label" data-i18n="inspect.metaShop">Tuning Shop</span>
+                      <span class="meta-val" id="targetShopName"></span>
+                    </span>
+                    <span class="identity-dff">
+                      <span class="meta-label" data-i18n="inspect.metaDffSize">DFF Size</span>
+                      <span class="meta-val" id="targetDffSize">--</span>
+                    </span>
+                  </div>
+                </div>
+                <details class="raw-disclosure">
+                  <summary>
+                    <span data-i18n="inspect.rawToggle">Raw configuration</span>
+                    <span class="badge badge-sm" id="vehiclesIdeSourceBadge">--</span>
+                  </summary>
+                  <div class="live-raw-box">
+                    <span class="meta-label" data-i18n="inspect.ideRawLineLabel">vehicles.ide Entry (resolved):</span>
+                    <code id="vehiclesIdeRawPreview" class="raw-ide">--</code>
+                  </div>
+                </details>
+              </div>
+              <!-- Edit State -->
+              <div class="card-edit-body" id="vehiclesIdeEditContainer" style="display:none;">
+                <label for="inputVehiclesIdeRaw" class="form-label" data-i18n="inspect.ideEditLabel">Edit vehicles.ide definition line:</label>
+                <textarea id="inputVehiclesIdeRaw" rows="2" class="form-control code-font" spellcheck="false" placeholder="ID, ModelName, TxdName, Type, HandlingID, GameName, Anims, Class, Frequency, Flags, CompRules, WheelId, WheelScaleFront, WheelScaleRear"></textarea>
+                <div class="param-guide-grid" id="vehiclesIdeGuideGrid">
+                  <span data-i18n="inspect.ideguide1">1.ID</span><span data-i18n="inspect.ideguide2">2.Model</span><span data-i18n="inspect.ideguide3">3.TXD</span><span data-i18n="inspect.ideguide4">4.Type</span><span data-i18n="inspect.ideguide5">5.HandlingID</span><span data-i18n="inspect.ideguide6">6.GameName</span><span data-i18n="inspect.ideguide7">7.Anim</span><span data-i18n="inspect.ideguide8">8.Class</span><span data-i18n="inspect.ideguide9">9.Freq</span><span data-i18n="inspect.ideguide10">10.Flags</span><span data-i18n="inspect.ideguide11">11.Comp</span><span data-i18n="inspect.ideguide12">12.WheelID</span><span data-i18n="inspect.ideguide13">13.FrontScale</span><span data-i18n="inspect.ideguide14">14.RearScale</span>
+                </div>
+                <div class="field-hint" data-i18n-html="inspect.ideEditorHint">Directly saved to ModLoader shadow copy of <code>vehicles.ide</code> with automatic snapshot backup in <code>backups/</code>.</div>
+                <div class="edit-actions-bar">
+                  <button type="button" class="btn btn-secondary btn-sm" id="btnCancelEditVehiclesIde" data-i18n="inspect.btnCancelEdit">✕ Cancel</button>
+                  <button type="button" class="btn btn-primary btn-sm" id="btnSaveVehiclesIde" data-i18n="inspect.btnSaveConfig">💾 Save Changes</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Handling Performance Card -->
+            <div class="card handling-card" id="cardHandling">
+              <div class="card-header">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <h3 data-i18n="inspect.handlingCardTitle">🏎️ Handling Parameters</h3>
+                  <span class="badge badge-info" id="handlingDriveBadge">--</span>
+                </div>
+                <div class="card-header-actions">
+                  <button type="button" class="btn btn-secondary btn-sm btn-edit-toggle" id="btnToggleEditHandling" data-i18n="inspect.btnEdit">✏️ Edit</button>
+                </div>
+              </div>
+              <!-- Preview State -->
+              <div class="handling-body" id="handlingPreviewContainer">
+                <div id="handlingDetails">
+                  <p class="empty-hint" data-i18n="inspect.handlingEmpty">No custom handling provided. Using vanilla physics.</p>
+                </div>
+                <details class="raw-disclosure">
+                  <summary>
+                    <span data-i18n="inspect.rawToggle">Raw configuration</span>
+                    <span class="badge badge-sm" id="handlingSourceBadge">--</span>
+                  </summary>
+                  <div class="live-raw-box">
+                    <span class="meta-label" data-i18n="inspect.handlingRawLineLabel">handling.cfg Physics Parameters (resolved):</span>
+                    <code id="handlingRawPreview" class="raw-handling">--</code>
+                  </div>
+                </details>
+              </div>
+              <!-- Edit State -->
+              <div class="card-edit-body" id="handlingEditContainer" style="display:none;">
+                <label for="inputHandlingRaw" class="form-label" data-i18n="inspect.handlingEditLabel">Edit handling.cfg parameters line:</label>
+                <textarea id="inputHandlingRaw" rows="3" class="form-control code-font" spellcheck="false" placeholder="IDENTIFIER Mass TurnMass DragMult CenterOfMass... NumGears MaxSpeed Accel DriveType EngineType BrakeDecel..."></textarea>
+                <div class="param-guide-grid" id="handlingGuideGrid">
+                  <span data-i18n="inspect.hguide1">1.Identifier</span><span data-i18n="inspect.hguide2">2.Mass(kg)</span><span data-i18n="inspect.hguide3">3.TurnMass</span><span data-i18n="inspect.hguide4">4.DragMult</span><span data-i18n="inspect.hguide5">5.CenterOfMass</span><span data-i18n="inspect.hguide6">6.Submerged%</span><span data-i18n="inspect.hguide7">7.Traction</span><span data-i18n="inspect.hguide8">8.Gears</span><span data-i18n="inspect.hguide9">9.MaxSpeed</span><span data-i18n="inspect.hguide10">10.Accel</span><span data-i18n="inspect.hguide11">11.Drive[FR4]</span><span data-i18n="inspect.hguide12">12.Engine[PDE]</span><span data-i18n="inspect.hguide13">13.Brake</span><span data-i18n="inspect.hguide14">14.SteerAngle</span>
+                </div>
+                <div id="handlingEditLiveDiff" class="handling-edit-live-diff" style="display:none;"></div>
+                <div class="field-hint" data-i18n-html="inspect.handlingEditorHint">Directly saved to ModLoader shadow copy of <code>handling.cfg</code> with automatic snapshot backup in <code>backups/</code>.</div>
+                <div class="edit-actions-bar">
+                  <button type="button" class="btn btn-secondary btn-sm" id="btnCancelEditHandling" data-i18n="inspect.btnCancelEdit">✕ Cancel</button>
+                  <button type="button" class="btn btn-primary btn-sm" id="btnSaveHandling" data-i18n="inspect.btnSaveConfig">💾 Save Changes</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Carcols Color Palette Card -->
+            <div class="card carcols-card" id="cardCarcols">
+              <div class="card-header">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <h3 data-i18n="inspect.carcolsCardTitle">🎨 Colors (Carcols)</h3>
+                  <span class="badge" id="colorCountBadge" data-i18n="inspect.colorCountBadgeDefault">0 Schemes</span>
+                  <span class="badge badge-info" id="colorTypeBadge" style="display:none;"></span>
+                </div>
+                <div class="card-header-actions">
+                  <button type="button" class="btn btn-secondary btn-sm btn-edit-toggle" id="btnToggleEditCarcols" data-i18n="inspect.btnEdit">✏️ Edit</button>
+                </div>
+              </div>
+              <!-- Preview State -->
+              <div class="carcols-body" id="carcolsPreviewContainer">
+                <div id="carcolsPalettes">
+                  <p class="empty-hint" data-i18n="inspect.carcolsEmpty">No custom colors provided. Using vanilla palette.</p>
+                </div>
+                <details class="raw-disclosure">
+                  <summary>
+                    <span data-i18n="inspect.rawToggle">Raw configuration</span>
+                    <span class="badge badge-sm" id="carcolsSourceBadge">--</span>
+                  </summary>
+                  <div class="live-raw-box">
+                    <span class="meta-label" data-i18n="inspect.carcolsRawLineLabel">carcols.dat Entry (resolved):</span>
+                    <code id="carcolsRawPreview" class="raw-carcols">--</code>
+                  </div>
+                </details>
+              </div>
+              <!-- Edit State -->
+              <div class="card-edit-body" id="carcolsEditContainer" style="display:none;">
+                <label for="inputCarcolsRaw" class="form-label" data-i18n="inspect.carcolsEditLabel">Edit carcols.dat palette line:</label>
+                <textarea id="inputCarcolsRaw" rows="2" class="form-control code-font" spellcheck="false" data-i18n-placeholder="inspect.carcolsPlaceholder" placeholder="Model, color1,color2, color3,color4... e.g.: previon, 14,33, 13,33, 92,33"></textarea>
+                <!-- Dynamic Swatches Live Preview while editing -->
+                <div id="carcolsEditSwatchesPreview" style="margin-top:8px;"></div>
+                <div class="field-hint" data-i18n-html="inspect.carcolsEditorHint">Directly saved to ModLoader shadow copy of <code>carcols.dat</code> with automatic snapshot backup in <code>backups/</code>.</div>
+                <div class="edit-actions-bar">
+                  <button type="button" class="btn btn-secondary btn-sm" id="btnCancelEditCarcols" data-i18n="inspect.btnCancelEdit">✕ Cancel</button>
+                  <button type="button" class="btn btn-primary btn-sm" id="btnSaveCarcols" data-i18n="inspect.btnSaveConfig">💾 Save Changes</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tuning Parts & Garage Safety Card (carmods) -->
+            <div class="card tuning-card" id="cardCarmods">
+              <div class="card-header">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <h3 data-i18n="inspect.tuningCardTitle">🛠️ Tuning Parts & Shop Configuration</h3>
+                  <span class="badge" id="tuningCountBadge" data-i18n="inspect.tuningCountBadgeDefault">0 Parts</span>
+                </div>
+                <div class="card-header-actions">
+                  <button type="button" class="btn btn-secondary btn-sm btn-edit-toggle" id="btnToggleEditCarmods" data-i18n="inspect.btnEdit">✏️ Edit</button>
+                </div>
+              </div>
+              <!-- Preview State -->
+              <div class="tuning-body" id="carmodsPreviewContainer">
+                <div id="tuningDetails">
+                  <p class="empty-hint" data-i18n="inspect.tuningEmpty">No tuning parts detected for this vehicle.</p>
+                </div>
+                <details class="raw-disclosure">
+                  <summary>
+                    <span data-i18n="inspect.rawToggle">Raw configuration</span>
+                    <span class="badge badge-sm" id="carmodsSourceBadge">--</span>
+                  </summary>
+                  <div class="live-raw-box">
+                    <span class="meta-label" data-i18n="inspect.carmodsRawLineLabel">carmods.dat Entry (resolved):</span>
+                    <code id="carmodsRawPreview" class="raw-carmods">--</code>
+                  </div>
+                </details>
+              </div>
+              <!-- Edit State -->
+              <div class="card-edit-body" id="carmodsEditContainer" style="display:none;">
+                <label for="inputCarmodsRaw" class="form-label" data-i18n="inspect.carmodsEditLabel">Edit carmods.dat parts mount line:</label>
+                <textarea id="inputCarmodsRaw" rows="3" class="form-control code-font" spellcheck="false" data-i18n-placeholder="inspect.carmodsPlaceholder" placeholder="Model, part1, part2, part3... e.g.: previon, exh_b_l, exh_b_m, fbmp_a_l"></textarea>
+                <div class="field-hint" data-i18n-html="inspect.carmodsEditorHint">Directly saved to ModLoader shadow copy of <code>carmods.dat</code> with auto mirror link pairing.</div>
+                <div class="edit-actions-bar">
+                  <button type="button" class="btn btn-secondary btn-sm" id="btnCancelEditCarmods" data-i18n="inspect.btnCancelEdit">✕ Cancel</button>
+                  <button type="button" class="btn btn-primary btn-sm" id="btnSaveCarmods" data-i18n="inspect.btnSaveConfig">💾 Save Changes</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right Column: FLA Special Features, Audio, Raw Text -->
+          <div class="inspector-right">
+            <!-- FLA 92 Special Features Card -->
+            <div class="card fla-features-card">
+              <div class="card-header">
+                <h3 data-i18n="inspect.flaSpecialTitle">✨ Special Features (FLA92 & Native)</h3>
+                <div class="card-header-actions">
+                  <span class="badge" id="specialFeatureBadge" data-i18n="inspect.flaSpecialNotConfigured">Not Configured</span>
+                  <button type="button" class="btn btn-secondary btn-sm btn-edit-toggle" id="btnToggleEditSpecial" data-i18n="inspect.btnEdit">✏️ Edit</button>
+                </div>
+              </div>
+              <!-- Preview State -->
+              <div class="card-body" id="specialPreviewContainer">
+                <div class="fla-status-box" id="specialFeatureStatusBox">
+                  <div class="fla-status-title">
+                    <span class="status-indicator-dot" id="specialDot"></span>
+                    <span id="specialStatusText" data-i18n="inspect.flaReadingFile">Reading configuration...</span>
+                  </div>
+                  <details class="raw-disclosure raw-disclosure-fla">
+                    <summary>
+                      <span data-i18n="inspect.rawToggleFla">Configuration record</span>
+                    </summary>
+                    <div class="fla-raw-preview" id="specialRawPreviewContainer">
+                      <code id="specialRawCode">--</code>
+                    </div>
+                  </details>
+                </div>
+              </div>
+              <!-- Edit State -->
+              <div class="card-edit-body" id="specialEditContainer" style="display:none;">
+                <div class="fla-section-title" data-i18n="inspect.flaQuickPresets">Presets</div>
+                <div class="fla-preset-chips" id="specialPresetChips">
+                  <button type="button" class="chip-btn" data-target="zr350" data-i18n-title="inspect.presetZr350Title" title="ZR-350: pop-up headlights">zr350</button>
+                  <button type="button" class="chip-btn" data-target="sandking" data-i18n-title="inspect.presetSandkingTitle" title="Sandking: high clearance">sandking</button>
+                  <button type="button" class="chip-btn" data-target="copcarla" data-i18n-title="inspect.presetCopcarTitle" title="Copcar LA: lights and siren">copcarla</button>
+                  <button type="button" class="chip-btn" data-target="taxi" data-i18n-title="inspect.presetTaxiTitle" title="Taxi: roof lamp">taxi</button>
+                  <button type="button" class="chip-btn" data-target="hydra" data-i18n-title="inspect.presetHydraTitle" title="Hydra: VTOL thrust">hydra</button>
+                  <button type="button" class="chip-btn" data-target="fbiranch" data-i18n-title="inspect.presetFbiTitle" title="FBI Rancher: strobe lights">fbiranch</button>
+                </div>
+
+                <div class="fla-editor-group">
+                  <label for="specialFeatureCustomInput" class="form-label" data-i18n="inspect.flaCustomTargetLabel">Target model</label>
+                  <input type="text" id="specialFeatureCustomInput" class="form-control" placeholder="zr350 / sandking / copcarla…" data-i18n-placeholder="inspect.flaCustomTargetPlaceholder">
+                </div>
+
+                <div class="edit-actions-bar">
+                  <button type="button" class="btn btn-secondary btn-sm" id="btnCancelEditSpecial" data-i18n="inspect.btnCancelEdit">✕ Cancel</button>
+                  <button type="button" class="btn btn-danger-soft btn-sm" id="btnRemoveSpecialFeature" data-i18n="inspect.btnRemoveSpecial">Revert</button>
+                  <button type="button" class="btn btn-primary btn-sm" id="btnSaveSpecialFeature" data-i18n="inspect.btnSaveSpecial">Save</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- FLA 92 Audio Settings Card -->
+            <div class="card fla-audio-card">
+              <div class="card-header">
+                <h3 data-i18n="inspect.flaAudioTitle">🔊 Audio (FLA92)</h3>
+                <div class="card-header-actions">
+                  <span class="badge" id="audioStatusBadge" data-i18n="inspect.flaAudioVanilla">Vanilla Audio</span>
+                  <button type="button" class="btn btn-secondary btn-sm btn-edit-toggle" id="btnToggleEditAudio" data-i18n="inspect.btnEdit">✏️ Edit</button>
+                </div>
+              </div>
+              <!-- Preview State -->
+              <div class="card-body" id="audioPreviewContainer">
+                <div class="fla-status-box" id="audioStatusBox">
+                  <div class="fla-status-title">
+                    <span class="status-indicator-dot" id="audioDot"></span>
+                    <span id="audioStatusText" data-i18n="inspect.flaReadingFile">Reading configuration...</span>
+                  </div>
+                  <details class="raw-disclosure raw-disclosure-fla">
+                    <summary>
+                      <span data-i18n="inspect.rawToggleFla">Configuration record</span>
+                    </summary>
+                    <div class="fla-raw-preview" id="audioRawPreviewContainer">
+                      <code id="audioCurrentRawCode">--</code>
+                    </div>
+                  </details>
+                </div>
+              </div>
+              <!-- Edit State -->
+              <div class="card-edit-body" id="audioEditContainer" style="display:none;">
+                <div class="audio-preset-selector">
+                  <label for="soundPresetSelect" class="form-label" data-i18n="inspect.flaAudioQuickPreset">Audio preset</label>
+                  <select id="soundPresetSelect" class="form-select">
+                    <!-- Populated by JS -->
+                  </select>
+                </div>
+
+                <div class="fla-editor-group">
+                  <div class="editor-header-flex">
+                    <label for="audioRawInput" class="form-label" data-i18n="inspect.flaAudioRawLabel">Parameter line</label>
+                    <button type="button" class="btn-link" id="btnResetAudioInput" data-i18n="inspect.btnResetAudio">Reset</button>
+                  </div>
+                  <textarea id="audioRawInput" rows="2" class="form-control form-textarea code-font" placeholder="VehicleName AudioType BankA BankB BassSetting BassFactor Pitch HornType HornPitch DoorSound Upgrade Radio RadioType NameType Gain" data-i18n-placeholder="inspect.audioPlaceholder" spellcheck="false"></textarea>
+                  <details class="raw-disclosure audio-guide-disclosure">
+                    <summary>
+                      <span data-i18n="inspect.audioFieldGuide">Field guide</span>
+                    </summary>
+                    <div class="audio-param-guide">
+                      <span class="guide-item" data-i18n="audio.p1">1. Model</span>
+                      <span class="guide-item" data-i18n="audio.p2">2. Audio Type</span>
+                      <span class="guide-item highlight" data-i18n="audio.p3">3. Bank A</span>
+                      <span class="guide-item highlight" data-i18n="audio.p4">4. Bank B</span>
+                      <span class="guide-item" data-i18n="audio.p5">5. Bass Config</span>
+                      <span class="guide-item" data-i18n="audio.p6">6. Bass Factor</span>
+                      <span class="guide-item" data-i18n="audio.p7">7. Pitch</span>
+                      <span class="guide-item" data-i18n="audio.p8">8. Horn Type</span>
+                      <span class="guide-item" data-i18n="audio.p9">9. Horn Pitch</span>
+                      <span class="guide-item" data-i18n="audio.p10">10. Door Sound</span>
+                      <span class="guide-item" data-i18n="audio.p11">11. Upgrade</span>
+                      <span class="guide-item" data-i18n="audio.p12">12. Radio</span>
+                      <span class="guide-item" data-i18n="audio.p13">13. Radio Type</span>
+                      <span class="guide-item" data-i18n="audio.p14">14. Name Type</span>
+                      <span class="guide-item" data-i18n="audio.p15">15. Gain</span>
+                    </div>
+                  </details>
+                </div>
+
+                <div class="edit-actions-bar">
+                  <button type="button" class="btn btn-secondary btn-sm" id="btnCancelEditAudio" data-i18n="inspect.btnCancelEdit">✕ Cancel</button>
+                  <button type="button" class="btn btn-danger-soft btn-sm" id="btnRemoveAudioSetting" data-i18n="inspect.btnRemoveAudio">Revert</button>
+                  <button type="button" class="btn btn-primary btn-sm" id="btnSaveAudioSetting" data-i18n="inspect.btnSaveAudio">Save</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Raw Readme Content Card -->
+            <div class="card raw-card">
+              <div class="card-header">
+                <h3 data-i18n="inspect.readmePreviewTitle">📜 Mod Documentation (Readme)</h3>
+              </div>
+              <div class="raw-body">
+                <pre id="rawReadmeContent" data-i18n="inspect.readmeEmpty">No text content available</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 3: Baseline Shadow Copies & Health -->
+      <section id="baselineTab" class="tab-panel">
+        <div class="card">
+          <div class="card-header">
+            <h3 data-i18n="base.title">🛡️ ModLoader Baseline Health & Shadow Copies</h3>
+            <button class="btn btn-primary" id="btnSyncAllBaseline" data-i18n="base.btnSyncAll">📥 Sync Missing Copies</button>
+          </div>
+          <div class="card-body">
+            <!-- Data Folder Selector Toolbar -->
+            <div class="folder-picker-bar">
+              <div class="folder-picker-left">
+                <span class="folder-picker-label" data-i18n="base.folderLabel">📁 Shadow Data Folder:</span>
+                <span class="folder-prefix">modloader \</span>
+                <select id="selectModloaderFolder" class="folder-select"></select>
+                <input type="text" id="inputCustomFolder" class="folder-input" placeholder="Enter folder name..." data-i18n-placeholder="base.inputCustomFolderPlaceholder" style="display:none;">
+                <button class="btn btn-secondary btn-sm" id="btnToggleCustomFolder" data-i18n="base.btnToggleCustom">➕ Custom</button>
+                <button class="btn btn-primary btn-sm" id="btnApplyDataFolder" data-i18n="base.btnApplyFolder">Apply Folder</button>
+              </div>
+              <div class="folder-picker-right">
+                <span class="folder-path-hint"><span data-i18n="base.currentAbsPath">Active Path:</span> <code id="currentShadowDirDisplay" data-i18n="status.detecting">Detecting...</code></span>
+              </div>
+            </div>
+
+            <div class="alert-box info" id="baselineZeroDestructionAlert" data-i18n-html="base.zeroDestruction"><strong>Zero-Risk Guarantee:</strong> Vanilla <code>data/</code> is strictly read-only; all operations modify shadow copies only.</div>
+
+            <div class="baseline-table-container">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="base.thFile">Config File</th>
+                    <th data-i18n="base.thVanilla">Vanilla data/ Status</th>
+                    <th data-i18n="base.thShadow">ModLoader Shadow Copy</th>
+                    <th data-i18n="base.thLineCount">Line Comparison</th>
+                    <th data-i18n="base.thHealth">Health Status</th>
+                    <th data-i18n="base.thAction">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="baselineTableBody">
+                  <!-- Populated by JS -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 4: Raw Readme Parser Lab -->
+      <section id="readmeParserTab" class="tab-panel">
+        <div class="card">
+          <div class="card-header">
+            <h3 data-i18n="lab.title">📝 Readme Parser & Testbench</h3>
+            <div style="display:flex; align-items:center; gap:10px;">
+              <span id="labLoadedFileName" class="badge badge-info" style="display:none;"></span>
+              <button class="btn btn-primary" id="btnTestParseRaw" data-i18n="lab.btnTestParse">🔍 Parse Text</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <!-- Drag & Drop Zone -->
+            <div class="drop-zone" id="labDropZone">
+              <input type="file" id="labFileInput" accept=".txt,.readme,.log,.cfg,.dat,.ide" style="display:none;">
+              <div class="drop-zone-content">
+                <div class="drop-zone-icon">📥</div>
+                <div class="drop-zone-text">
+                  <strong data-i18n="lab.dropText">Drop Readme files here (.txt / .readme / .log)</strong>
+                  <span><span data-i18n="lab.orText">or</span> <a href="javascript:void(0)" id="labBrowseLink" data-i18n="lab.browseLink">browse files</a></span>
+                </div>
+              </div>
+            </div>
+
+            <div class="lab-layout" style="margin-top: 16px;">
+              <div class="lab-input">
+                <textarea id="labTextInput" rows="15" placeholder="Drop files here or paste text manually..." data-i18n-placeholder="lab.textPlaceholder"></textarea>
+              </div>
+              <div class="lab-output">
+                <h4 data-i18n="lab.resultTitle">Extracted Configurations:</h4>
+                <div id="labParsedResults" class="lab-results-box">
+                  <p class="empty-hint" data-i18n="lab.emptyHint">Drop a readme or click 'Parse Text' to preview extracted configurations</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 5: Mod Installer -->
+      <section id="installTab" class="tab-panel">
+        <div class="card installer-card">
+          <div class="card-header">
+            <h3 data-i18n="install.headerTitle">📦 Install Vehicle Mod</h3>
+            <span class="badge badge-info" data-i18n="install.headerBadge">ZIP / RAR / 7Z archive or mod folder</span>
+          </div>
+          <div class="card-body">
+            <!-- Step 1: Input / Drop Area -->
+            <div id="installStep1" class="installer-step">
+              <div class="drop-zone installer-drop-zone" id="installDropZone">
+                <input type="file" id="installFileInput" accept=".zip,.rar,.7z,.dff,.txd,.txt" style="display:none;">
+                <div class="drop-zone-content">
+                  <div class="drop-zone-icon">📥</div>
+                  <div class="drop-zone-text">
+                    <strong style="font-size:16px;" data-i18n="install.step1Drop">Drag & drop mod archive or folder here</strong>
+                    <div style="margin-top:10px; display:flex; justify-content:center; gap:12px;">
+                      <button class="btn btn-primary btn-sm" id="btnBrowseInstallArchive" data-i18n="install.btnBrowseArchive">📦 Browse Archive...</button>
+                      <button class="btn btn-secondary btn-sm" id="btnBrowseInstallFolder" data-i18n="install.btnBrowseFolder">📂 Browse Folder...</button>
+                    </div>
+                    <div style="margin-top:14px; display:flex; align-items:center; justify-content:center; gap:8px;">
+                      <span style="font-size:12px; color:var(--text-muted);" data-i18n="install.orManual">or enter path:</span>
+                      <input type="text" id="inputManualSourcePath" placeholder="e.g. D:\Downloads\MyMod.zip" data-i18n-placeholder="install.manualPlaceholder" style="width:280px; padding:6px 10px; font-size:12px; background:#05070a; border:1px solid var(--border); border-radius:4px; color:var(--text-bright);">
+                      <button class="btn btn-secondary btn-sm" id="btnAnalyzeManualPath" data-i18n="install.btnAnalyze">Scan Mod</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Pre-Install Loading Spinner -->
+            <div id="installLoading" style="display:none; text-align:center; padding:40px;">
+              <div class="loading-spinner" data-i18n="install.loadingSpinner">Scanning mod archive and analyzing assets...</div>
+            </div>
+
+            <!-- Step 2: Pre-Inspection Review & Customization -->
+            <div id="installStep2" class="installer-step" style="display:none;">
+              <p class="install-step2-kicker" data-i18n="install.step2Title">Review the options, then install.</p>
+
+              <!-- Multi-Vehicle Wizard Stepper (shown when mod has multiple vehicles) -->
+              <div id="installMultiCarWizardBar" class="multi-car-wizard-card" style="display:none;">
+                <div class="wizard-row wizard-row-nav">
+                  <div id="installPhaseTabs">
+                    <!-- Phase tabs rendered dynamically by JS -->
+                  </div>
+                  <div class="multi-car-steps-track" id="installMultiCarStepsTrack">
+                    <!-- Steps pills rendered dynamically by JS -->
+                  </div>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btnSeparateFolders" data-i18n="install.separateFoldersBtn" data-i18n-title="install.separateFoldersTitle" title="Give every car with a blank folder its own folder named after the car">Separate folders</button>
+                </div>
+                <div class="wizard-row wizard-row-opts">
+                  <label class="wizard-skip-checkbox">
+                    <input type="checkbox" id="chkSkipCurrentCar">
+                    <span data-i18n="install.skipCurrentCar">Skip this vehicle</span>
+                  </label>
+                  <div class="wizard-folder-row">
+                    <span data-i18n="install.perCarFolderLabel">This vehicle folder</span>
+                    <select id="installWizardCarCategory">
+                      <!-- Populated by JS: follow-shared + modloader folders -->
+                    </select>
+                    <input type="text" id="installWizardCarFolder" data-i18n-placeholder="install.perCarFolderPlaceholder" placeholder="Empty = shared mod folder">
+                  </div>
+                </div>
+                <div id="installAlternativeHint" class="field-hint" style="display:none; margin-top:8px; color:var(--accent-cyan); line-height:1.5;"></div>
+                <span id="installWizardProgressBadge" hidden></span>
+                <span id="installWizardCurrentCarName" hidden></span>
+                <span id="installWizardCarFolderPreview" hidden></span>
+              </div>
+
+              <div class="install-review-grid">
+                <!-- Left: Target Car & Destination Settings -->
+                <div class="install-settings-col">
+                  <!-- Target Model Selection Card -->
+                  <div class="card install-pane-card" style="margin-bottom:16px;">
+                    <div class="card-header">
+                      <h4 data-i18n="install.cardTargetModel">Target vehicle</h4>
+                      <span class="badge" id="installModelBadge">ID: --</span>
+                    </div>
+                    <div class="card-body">
+                      <div class="install-mode-toggle" id="installModeToggle" role="group">
+                        <button type="button" class="install-mode-btn active" data-mode="replace" data-i18n="install.modeReplace">🔁 Replace</button>
+                        <button type="button" class="install-mode-btn" data-mode="addon" data-i18n="install.modeAddon">➕ Add New</button>
+                      </div>
+                      <select id="installVehicleSelect">
+                        <!-- Populated dynamically with 212 vanilla vehicles -->
+                      </select>
+                      <div id="installAddonNameFields" style="display:none; margin-top:10px;">
+                        <label for="installNewModelName" class="form-label" data-i18n="install.newModelLabel">New model name (DFF file name)</label>
+                        <input type="text" id="installNewModelName" class="form-control" maxlength="20" spellcheck="false" autocomplete="off" placeholder="e.g. previon2" data-i18n-placeholder="install.newModelPlaceholder">
+                        <label for="installNewTxdName" class="form-label" style="margin-top:8px;" data-i18n="install.newTxdLabel">Texture name (TXD file name)</label>
+                        <input type="text" id="installNewTxdName" class="form-control" maxlength="20" spellcheck="false" autocomplete="off" placeholder="Defaults to the model name" data-i18n-placeholder="install.newTxdPlaceholder">
+                        <label for="installNewHandlingId" class="form-label" style="margin-top:8px;" data-i18n="install.newHandlingLabel">Internal handling ID (handling.cfg first column / vehicles.ide Handling column)</label>
+                        <input type="text" id="installNewHandlingId" class="form-control" maxlength="14" spellcheck="false" autocomplete="off" placeholder="Derived from the model name, e.g. PREVION2" data-i18n-placeholder="install.newHandlingPlaceholder">
+                        <div class="field-hint" style="margin-top:6px; line-height:1.5;" data-i18n="install.newNameHint">DFF/TXD files are renamed automatically and registered as a new ID with handling/carcols/carmods/FLA data; the original car is left untouched.</div>
+                        <div class="field-hint" style="color:#f85149; min-height:16px;" id="installNewNameError"></div>
+                      </div>
+                      <div id="installModelRenameHint" class="field-hint" style="display:none;" data-i18n="install.modelRenameHint">Replacement target changed. Models and textures will be renamed to match.</div>
+                      <div id="installAddonIdRow" style="margin-top:10px; display:none;">
+                        <label class="form-label" data-i18n="install.addonIdLabel">Addon vehicle ID</label>
+                        <div style="display:flex; gap:8px; align-items:center;">
+                          <input type="number" id="installAddonIdInput" min="612" max="65535" step="1">
+                          <button type="button" class="btn btn-secondary btn-sm" id="btnAddonIdAuto" data-i18n="install.addonIdAutoBtn">Pick a free ID</button>
+                        </div>
+                        <div id="installAddonIdStatus" class="field-hint"></div>
+                      </div>
+                      <div class="install-fxt-row">
+                        <div>
+                          <label class="form-label" data-i18n="install.fxtKeyLabel">GXT key</label>
+                          <input type="text" id="installFxtKey">
+                        </div>
+                        <div>
+                          <label class="form-label" data-i18n="install.fxtNameLabel">In-game name</label>
+                          <input type="text" id="installFxtName">
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Destination Folder in ModLoader -->
+                  <div class="card install-pane-card">
+                    <div class="card-header">
+                      <h4 data-i18n="install.cardPathTitle">Install path</h4>
+                      <span class="badge" id="installDestPhaseBadge" style="display:none;"></span>
+                    </div>
+                    <div class="card-body">
+                      <div style="margin-bottom:10px;">
+                        <label class="form-label" data-i18n="install.categoryLabel">ModLoader folder</label>
+                        <select id="installCategorySelect">
+                          <!-- Populated with modloader folders -->
+                        </select>
+                      </div>
+                      <div style="margin-bottom:10px;">
+                        <label class="form-label" data-i18n="install.subfolderLabel">Mod folder</label>
+                        <input type="text" id="installSubfolderName" data-i18n-placeholder="install.subfolderPlaceholder" placeholder="e.g. Infernus_2024">
+                      </div>
+                      <details class="install-fold">
+                        <summary data-i18n="install.authorLabel">Author subfolder (optional)</summary>
+                        <input type="text" id="installAuthorFolder" list="existingAuthorsList" data-i18n-placeholder="install.authorPlaceholder" placeholder="Leave blank to install at the folder root">
+                        <datalist id="existingAuthorsList"></datalist>
+                      </details>
+                      <div class="install-path-preview">
+                        <code id="installPathLivePreview">modloader/...</code>
+                        <details class="install-path-vehicles" id="installPathVehicleListWrap" hidden>
+                          <summary data-i18n="install.pathVehicleListToggle">Per-vehicle paths</summary>
+                          <div id="installPathVehicleList"></div>
+                        </details>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Right: File Breakdown & Injection Checklist -->
+                <div class="install-details-col">
+                  <!-- Multi-Version Picker first: the decision that actually needs attention -->
+                  <div class="card install-pane-card" id="installVariantCard" style="margin-bottom:16px; display:none;">
+                    <div class="card-header">
+                      <h4 data-i18n="install.cardVariantTitle">Versions</h4>
+                      <span class="badge" id="installVariantBadge"></span>
+                    </div>
+                    <div class="card-body">
+                      <div class="field-hint" style="margin-bottom:8px;" data-i18n="install.variantHint">Same-named files exist in more than one version. Pick one per group. Tuning parts should match the vehicle version.</div>
+                      <div id="variantQuickRow" class="variant-quick-row">
+                        <!-- Populated by JS -->
+                      </div>
+                      <div id="installVariantGroups" class="install-variant-groups">
+                        <!-- Populated by JS -->
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="card install-pane-card" style="margin-bottom:16px;">
+                    <div class="card-header">
+                      <h4 data-i18n="install.cardComponentsTitle">Pack contents</h4>
+                      <div style="display:flex; align-items:center; gap:6px;">
+                        <span class="badge" id="installTotalFilesBadge" data-i18n="install.zeroFiles">0 files</span>
+                        <span class="badge" id="installExcludedFilesBadge" style="display:none; background:rgba(239,68,68,0.2); color:#fca5a5; border:1px solid rgba(239,68,68,0.4);"></span>
+                      </div>
+                    </div>
+                    <div class="card-body">
+                      <div id="installFilesBreakdown" class="install-asset-stats">
+                        <!-- Populated by JS -->
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="card install-pane-card" style="margin-bottom:16px;">
+                    <div class="card-body">
+                      <details class="install-fold" id="installChecklistFold">
+                        <summary>
+                          <span data-i18n="install.cardChecklistTitle">Will write</span>
+                          <span class="install-fold-meta" id="installChecklistSummary"></span>
+                        </summary>
+                        <div class="checklist-grid">
+                          <label>
+                            <input type="checkbox" id="chkCopyFiles" checked>
+                            <span data-i18n="install.chkDeploy">Models & textures</span>
+                          </label>
+                          <label>
+                            <input type="checkbox" id="chkMergeHandling" checked>
+                            <span data-i18n="install.chkHandling">handling.cfg</span>
+                          </label>
+                          <label>
+                            <input type="checkbox" id="chkMergeCarcols" checked>
+                            <span data-i18n="install.chkCarcols">carcols.dat</span>
+                          </label>
+                          <label>
+                            <input type="checkbox" id="chkMergeCarmods" checked>
+                            <span data-i18n="install.chkCarmods">carmods.dat</span>
+                          </label>
+                          <label>
+                            <input type="checkbox" id="chkGenShopping" checked>
+                            <span data-i18n="install.chkShopping">shopping.dat crash guard</span>
+                          </label>
+                          <label>
+                            <input type="checkbox" id="chkGenFxt" checked>
+                            <span data-i18n="install.chkFxt">In-game name (.fxt)</span>
+                          </label>
+                          <label>
+                            <input type="checkbox" id="chkMergeFla" checked>
+                            <span data-i18n="install.chkFla">FLA features & audio</span>
+                          </label>
+                        </div>
+                      </details>
+                    </div>
+                  </div>
+
+                  <!-- Tuning Parts & ID Assignment Card -->
+                  <div class="card install-pane-card" id="installTuningCard" style="margin-bottom:16px; display:none;">
+                    <div class="card-header">
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <h4 data-i18n="install.cardTuningTitle">Tuning part IDs</h4>
+                        <span class="badge" id="installTuningBadge" data-i18n="install.zeroParts">0 parts</span>
+                      </div>
+                      <div style="display:flex; gap:6px;">
+                        <button type="button" class="btn btn-secondary btn-sm" id="btnOpenIdPoolFromInstall" data-i18n="install.btnViewIdPool">Free ID pool</button>
+                        <button type="button" class="btn btn-secondary btn-sm" id="btnAutoReassignIds" data-i18n="install.btnAutoResetIds">Auto-assign</button>
+                      </div>
+                    </div>
+                    <div class="card-body" style="padding:12px 14px;">
+                      <div id="installTuningConflictAlert" style="display:none; margin-bottom:10px; padding:8px 12px; background:rgba(239, 68, 68, 0.1); border:1px solid rgba(239, 68, 68, 0.4); border-radius:6px; color:#fca5a5; font-size:12px;" data-i18n-html="install.tuningConflict">⚠️ <strong>ID Conflict Detected!</strong> Original IDs conflict with installed mods. Reassigned to free IDs automatically.</div>
+                      <div class="tuning-table-wrapper" style="max-height:220px; overflow-y:auto; border:1px solid var(--border); border-radius:6px;">
+                        <table class="tuning-id-table" style="width:100%; border-collapse:collapse; font-size:12px;">
+                          <thead>
+                            <tr style="background:#0d1117; color:var(--text-muted); text-align:left; position:sticky; top:0; z-index:1;">
+                              <th style="padding:6px 10px;" data-i18n="install.thPartModel">Part Model</th>
+                              <th style="padding:6px 10px;" data-i18n="install.thPartCategory">Category</th>
+                              <th style="padding:6px 10px; width:130px;" data-i18n="install.thAssignedId">Assigned ID (Editable)</th>
+                              <th style="padding:6px 10px;" data-i18n="install.thConflictCheck">Status & Safety</th>
+                            </tr>
+                          </thead>
+                          <tbody id="installTuningTableBody">
+                            <!-- Populated by JS -->
+                          </tbody>
+                        </table>
+                      </div>
+                      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; font-size:11px; color:var(--text-muted);">
+                        <span data-i18n-html="install.tuningTip">💡 Addon tuning parts are automatically registered in ModLoader's <code>veh_mods.ide</code>.</span>
+                        <span id="tuningTableSummaryText" style="color:var(--accent-emerald);" data-i18n="install.tuningSafeText">All tuning parts verified conflict-free</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Action Buttons -->
+                  <div class="installer-action-bar">
+                    <button type="button" class="btn btn-secondary" id="btnCancelInstall" data-i18n="install.btnCancel">Cancel</button>
+                    <div class="installer-action-nav">
+                      <button type="button" class="btn btn-secondary" id="btnWizardPrevCar" style="display:none;" data-i18n="install.btnPrevCar">Previous</button>
+                      <button type="button" class="btn btn-secondary" id="btnWizardNextCar" style="display:none;" data-i18n="install.btnNextCar">Next</button>
+                      <button type="button" class="btn btn-primary" id="btnExecuteInstall" data-i18n="install.btnConfirm">Install</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Step 3: Installation Result Report -->
+            <div id="installStep3" class="installer-step" style="display:none;">
+              <div class="card" style="background:#05070a; border-color:var(--accent-emerald);">
+                <div class="card-header" style="background:rgba(52, 211, 153, 0.1);">
+                  <h3 style="color:var(--accent-emerald);" data-i18n="install.step3Title">🎉 Vehicle Mod Installed!</h3>
+                </div>
+                <div class="card-body" id="installResultBody" style="padding:20px;">
+                  <!-- Populated by JS -->
+                </div>
+                <div class="modal-footer" style="background:none; border:none; padding:16px 20px;">
+                  <button class="btn btn-secondary" id="btnOpenInstalledFolder" data-i18n="install.btnOpenFolder">📁 Open Folder</button>
+                  <button class="btn btn-primary" id="btnGoToModLibrary" data-i18n="install.btnGoToMods">🚗 View Mod</button>
+                  <button class="btn btn-secondary" id="btnInstallAnother" data-i18n="install.btnInstallAnother">📦 Install Another</button>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Dry-Run Modal -->
+    <div class="modal" id="dryRunModal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 data-i18n="modal.dryRunTitle">⚡ Dry-Run Merge Preview</h3>
+          <button class="close-btn" id="closeDryRunModal">&times;</button>
+        </div>
+        <div class="modal-body" id="dryRunModalBody">
+          <!-- Populated by JS -->
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="cancelDryRunBtn" data-i18n="modal.btnCancel">Cancel</button>
+          <button class="btn btn-primary" id="confirmApplyMergeBtn" data-i18n="modal.btnApply">Apply to Shadow Baseline</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Path Settings Modal -->
+    <div class="modal" id="pathModal">
+      <div class="modal-content" style="max-width: 580px;">
+        <div class="modal-header">
+          <h3 id="pathModalTitle" data-i18n="path.modalTitle">📁 Select GTA: San Andreas Root Directory</h3>
+          <button class="close-btn" id="closePathModal">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p class="desc-text" id="pathModalDesc" data-i18n-html="path.modalDesc">Please select the game directory containing <code>gta_sa.exe</code> and <code>data/</code>:</p>
+          <div style="display:flex; gap:8px; margin-bottom:12px;">
+            <input type="text" id="inputCustomGamePath" style="flex:1; padding:8px 12px; background:#05070a; border:1px solid var(--border); border-radius:6px; color:var(--text-bright); font-size:13px;" placeholder="Click 'Browse...' or enter game path manually" data-i18n-placeholder="path.inputPlaceholder">
+            <button class="btn btn-secondary" id="btnBrowseFolderNative" data-i18n="path.btnBrowse">📂 Browse...</button>
+          </div>
+          <p class="desc-text" style="margin-top:12px;" data-i18n="path.subfolderDesc">ModLoader folder for shadow data copies (default: Modded Cars):</p>
+          <div style="display:flex; gap:8px; align-items:center; margin-bottom:12px;">
+            <span style="font-size:12px; color:var(--text-muted); font-family:var(--font-mono);">modloader \</span>
+            <input type="text" id="inputModalDataFolder" style="flex:1; padding:8px 12px; background:#05070a; border:1px solid var(--border); border-radius:6px; color:var(--text-bright); font-size:13px;" placeholder="e.g. Modded Cars or Addon Cars" data-i18n-placeholder="path.subfolderPlaceholder">
+          </div>
+          <div style="margin-top: 14px; padding: 12px 14px; background: rgba(56, 189, 248, 0.06); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 8px;">
+            <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer; font-size:13px; color:var(--text-bright);">
+              <input type="checkbox" id="chkRememberDefaultPath" style="margin-top:2px; width:16px; height:16px; accent-color:var(--accent-cyan); cursor:pointer;">
+              <div>
+                <strong data-i18n="path.rememberTitle">Save this directory for next time</strong>
+                <p style="margin:3px 0 0 0; font-size:11px; color:var(--text-muted);" data-i18n="path.rememberDesc">When checked, saves to config.json. If unchecked, only used for current session and prompts on next startup.</p>
+              </div>
+            </label>
+          </div>
+          <div id="pathValidationAlert" style="display:none;" class="alert-box"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="cancelPathModal" data-i18n="modal.btnCancel">Cancel</button>
+          <button class="btn btn-primary" id="saveGamePathBtn" data-i18n="path.btnSave">Confirm & Launch</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Game Free ID Pool & Allocation Inspector Modal -->
+    <div class="modal" id="idPoolModal">
+      <div class="modal-content" style="max-width: 900px; width: 92%;">
+        <div class="modal-header">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <span style="font-size:22px;">🆔</span>
+            <div>
+              <h3 style="margin:0; font-size:16px;" data-i18n="idpool.headerTitle">GTA:SA Model ID Pool & Free Range Inspector</h3>
+              <p style="margin:2px 0 0 0; font-size:11px; color:var(--text-muted);" data-i18n-html="idpool.headerDesc">Scans vanilla <code>data/</code> and all <code>modloader/</code> configs to pinpoint conflict-free ID blocks</p>
+            </div>
+          </div>
+          <button class="close-btn" id="closeIdPoolModal">&times;</button>
+        </div>
+        <div class="modal-body" style="padding:16px 20px; max-height:calc(85vh - 120px); overflow-y:auto;">
+          <!-- Top KPI Statistics -->
+          <div class="id-kpi-grid">
+            <div class="id-kpi-card">
+              <span class="id-kpi-label" data-i18n="idpool.kpiOccupied">Total Occupied IDs</span>
+              <span class="id-kpi-value" id="idKpiOccupied">--</span>
+              <span class="id-kpi-sub" id="idKpiBreakdown" data-i18n="idpool.breakdownInitial">Vanilla: -- | Mod Addon: --</span>
+            </div>
+            <div class="id-kpi-card highlight-green">
+              <span class="id-kpi-label" data-i18n="idpool.kpiFree">Common Free IDs (1000-20000)</span>
+              <span class="id-kpi-value" id="idKpiFree">--</span>
+              <span class="id-kpi-sub" id="idKpiFreeSub" data-i18n="idpool.kpiFreeSub">Completely free of vanilla or mod conflicts</span>
+            </div>
+            <div class="id-kpi-card" id="idKpiConflictCard">
+              <span class="id-kpi-label" data-i18n="idpool.kpiConflict">Model ID Conflict Check</span>
+              <span class="id-kpi-value" id="idKpiConflict" style="font-size:15px; margin-top:2px;">--</span>
+              <span class="id-kpi-sub" id="idKpiConflictSub" data-i18n="idpool.conflictInitial">Scanning all mods</span>
+            </div>
+            <div class="id-kpi-card" id="idKpiFlaCard">
+              <span class="id-kpi-label" data-i18n="idpool.kpiFla">Fastman92 (FLA) ID Patch</span>
+              <span class="id-kpi-value" id="idKpiFla" style="font-size:15px; margin-top:2px;">--</span>
+              <span class="id-kpi-sub" id="idKpiFlaSub" data-i18n="idpool.flaSubInitial">Killable Limit: --</span>
+            </div>
+          </div>
+
+          <!-- Free Gaps Section -->
+          <div style="margin-top:20px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
+              <h4 style="font-size:13px; color:var(--text-bright); margin:0;" data-i18n="idpool.gapsTitle">🎯 Prominent Free ID Gaps</h4>
+              <span style="font-size:11px; color:var(--text-muted);" data-i18n="idpool.gapsHint">Click any gap card to probe its starting ID below</span>
+            </div>
+            <!-- Gap Category Filter Chips -->
+            <div class="gap-filter-bar" style="display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap;">
+              <button class="btn btn-secondary btn-sm gap-filter-btn active" data-gap-filter="all" data-i18n="idpool.gapFilterAll">All Ranges</button>
+              <button class="btn btn-secondary btn-sm gap-filter-btn" data-gap-filter="tuning" data-i18n="idpool.gapFilterTuning">🔧 Tuning Prime</button>
+              <button class="btn btn-secondary btn-sm gap-filter-btn" data-gap-filter="addon" data-i18n="idpool.gapFilterAddon">🚗 Addon Car Prime</button>
+              <button class="btn btn-secondary btn-sm gap-filter-btn" data-gap-filter="large" data-i18n="idpool.gapFilterLarge">📦 Large Blocks (≥100 Free)</button>
+            </div>
+            <div class="free-gaps-container" id="freeGapsContainer">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+
+          <!-- Single ID Live Prober -->
+          <div style="margin-top:20px; padding:14px; background:#05070a; border:1px solid var(--border); border-radius:8px;">
+            <h4 style="font-size:13px; color:var(--text-bright); margin:0 0 8px 0;" data-i18n="idpool.probeTitle">🔎 Live ID Conflict Prober</h4>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <input type="number" id="inputIdProbe" placeholder="Enter model ID (e.g. 411, 11748, 12501)" data-i18n-placeholder="idpool.probePlaceholder" style="flex:1; padding:8px 12px; background:#0d1117; border:1px solid var(--border); border-radius:6px; color:var(--text-bright); font-size:13px;">
+              <button class="btn btn-primary btn-sm" id="btnProbeId" style="padding:8px 16px;" data-i18n="idpool.probeBtn">🔍 Probe ID</button>
+            </div>
+            <div id="idProbeResult" style="margin-top:10px; display:none;">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+
+          <!-- ID Search & Filter Table -->
+          <div style="margin-top:20px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+              <h4 style="font-size:13px; color:var(--text-bright); margin:0;" data-i18n="idpool.searchTitle">📋 Occupied ID Search & Verification Table</h4>
+              <div style="display:flex; gap:8px; align-items:center;">
+                <input type="text" id="inputIdSearch" placeholder="Search model name, vehicle type or ID..." data-i18n-placeholder="idpool.searchPlaceholder" style="width:210px; padding:6px 10px; background:#05070a; border:1px solid var(--border); border-radius:4px; color:var(--text-bright); font-size:12px;">
+                <select id="selectIdFilterType" style="padding:6px 10px; background:#05070a; border:1px solid var(--border); border-radius:4px; color:var(--text-bright); font-size:12px;">
+                  <option value="all" data-i18n="idpool.filterAll">All Occupied Models</option>
+                  <option value="addon" data-i18n="idpool.filterAddon">Mod Addon Only</option>
+                  <option value="override" data-i18n="idpool.filterOverride">Mod Replaced Only</option>
+                  <option value="vanilla" data-i18n="idpool.filterVanilla">Vanilla Only</option>
+                  <option value="tuning" data-i18n="idpool.filterTuning">Tuning Parts Only</option>
+                  <option value="cars" data-i18n="idpool.filterCars">All Vehicles</option>
+                  <option value="car" data-i18n="idpool.filterCar">Cars Only</option>
+                  <option value="bike" data-i18n="idpool.filterBike">Bikes Only</option>
+                  <option value="plane_heli" data-i18n="idpool.filterPlane">Aircraft Only</option>
+                  <option value="boat" data-i18n="idpool.filterBoat">Boats Only</option>
+                  <option value="trailer" data-i18n="idpool.filterTrailer">Trailers Only</option>
+                </select>
+              </div>
+            </div>
+            <div style="max-height:240px; overflow-y:auto; border:1px solid var(--border); border-radius:6px;">
+              <table style="width:100%; border-collapse:collapse; font-size:12px;">
+                <thead>
+                  <tr style="background:#0d1117; color:var(--text-muted); text-align:left; position:sticky; top:0; z-index:1;">
+                    <th style="padding:6px 10px;" data-i18n="idpool.thId">ID</th>
+                    <th style="padding:6px 10px;" data-i18n="idpool.thModel">Model Name</th>
+                    <th style="padding:6px 10px;" data-i18n="idpool.thSection">Section</th>
+                    <th style="padding:6px 10px;" data-i18n="idpool.thNature">Nature</th>
+                    <th style="padding:6px 10px;" data-i18n="idpool.thFile">Source File</th>
+                  </tr>
+                </thead>
+                <tbody id="idSearchResultsBody">
+                  <!-- Populated by JS -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="closeIdPoolModalBtn" data-i18n="idpool.btnClose">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tuning Part ID Editor Modal -->
+    <div class="modal" id="tuningIdModal">
+      <div class="modal-content" style="max-width: 480px; width: 90%;">
+        <div class="modal-header">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:20px;">🆔</span>
+            <h3 style="margin:0; font-size:15px;" data-i18n="inspect.modalEditIdTitle">🆔 Edit Tuning Part Model ID</h3>
+          </div>
+          <button type="button" class="close-btn" id="closeTuningIdModal">&times;</button>
+        </div>
+        <div class="modal-body" style="padding:16px 20px;">
+          <div style="margin-bottom:12px;">
+            <span class="meta-label" data-i18n="inspect.modalEditIdPartLabel">Target Part Name:</span>
+            <span id="editTuningPartName" style="font-weight:600; color:var(--accent-purple); font-family:var(--font-mono); font-size:14px;">--</span>
+          </div>
+          <div style="margin-bottom:12px;">
+            <label for="inputTuningNewId" class="form-label" data-i18n="inspect.modalEditIdInputLabel">New Model ID (veh_mods.ide):</label>
+            <input type="number" id="inputTuningNewId" min="400" max="65535" class="form-control" style="font-family:var(--font-mono); font-size:15px; font-weight:bold;" placeholder="e.g. 11735" data-i18n-placeholder="inspect.modalEditIdPlaceholder">
+            <div id="tuningIdCheckStatus" style="margin-top:8px; font-size:12px; min-height:18px;"></div>
+          </div>
+          <div class="field-hint" style="font-size:11px; color:var(--text-muted); line-height:1.5;" data-i18n-html="inspect.modalEditIdHint">IdManager checks this ID live against vehicles, weapons, and map models to prevent conflicts.</div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" id="cancelTuningIdBtn" data-i18n="inspect.modalEditIdBtnCancel">Cancel</button>
+          <button type="button" class="btn btn-primary btn-sm" id="saveTuningIdBtn" data-i18n="inspect.modalEditIdBtnSave">💾 Save ID</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mod Folder Rename Modal -->
+    <div class="modal" id="renameModModal">
+      <div class="modal-content" style="max-width: 480px; width: 90%;">
+        <div class="modal-header">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:20px;">✏️</span>
+            <h3 style="margin:0; font-size:15px;" data-i18n="mods.renameModalTitle">Rename Mod Folder</h3>
+          </div>
+          <button type="button" class="close-btn" id="closeRenameModModal">&times;</button>
+        </div>
+        <div class="modal-body" style="padding:16px 20px;">
+          <div style="margin-bottom:12px;">
+            <span class="meta-label" data-i18n="mods.renameCurrentLabel">Current path:</span>
+            <span id="renameModCurrentPath" style="font-family:var(--font-mono); font-size:12px; color:var(--text-bright); word-break:break-all;">--</span>
+          </div>
+          <div style="margin-bottom:12px;">
+            <label for="inputRenameModName" class="form-label" data-i18n="mods.renameInputLabel">New folder name:</label>
+            <input type="text" id="inputRenameModName" class="form-control" maxlength="100" spellcheck="false" placeholder="e.g. BF Club" data-i18n-placeholder="mods.renamePlaceholder">
+            <div id="renameModError" style="margin-top:8px; font-size:12px; min-height:18px; color:#f85149;"></div>
+          </div>
+          <div class="field-hint" style="font-size:11px; color:var(--text-muted); line-height:1.5;" data-i18n="mods.renameHint">Only the mod folder itself is renamed. Merged configuration data is untouched and the list refreshes automatically.</div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" id="cancelRenameModBtn" data-i18n="mods.renameBtnCancel">Cancel</button>
+          <button type="button" class="btn btn-primary btn-sm" id="saveRenameModBtn" data-i18n="mods.renameBtnSave">💾 Save Name</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Partition Folder Switcher Modal -->
+    <div class="modal" id="partitionFolderModal">
+      <div class="modal-content" style="max-width: 520px; width: 92%;">
+        <div class="modal-header">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:20px;">📁</span>
+            <h3 style="margin:0; font-size:15px;" id="partitionModalTitle">Change Vehicle Mod Directory</h3>
+          </div>
+          <button type="button" class="close-btn" id="closePartitionFolderModal">&times;</button>
+        </div>
+        <div class="modal-body" style="padding:16px 20px;">
+          <p style="font-size:12px; color:var(--text-muted); margin-bottom:14px; line-height:1.5;" id="partitionModalDesc" data-i18n="mods.modalDesc">
+            Select or specify the subfolder under <code>modloader\</code> for this partition. The system will rescan after switching.
+          </p>
+
+          <div style="margin-bottom:14px;">
+            <label style="font-size:12px; font-weight:600; color:var(--text-bright); display:block; margin-bottom:6px;" data-i18n="mods.modalFolderSelectLabel">Existing ModLoader Folders:</label>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <select id="selectPartitionFolder" style="flex:1; padding:7px 10px; background:#0d1117; border:1px solid var(--border); border-radius:6px; color:var(--text-bright); font-size:13px;">
+              </select>
+              <input type="text" id="inputCustomPartitionFolder" data-i18n-placeholder="mods.customPartitionFolderPlaceholder" placeholder="Enter a custom folder name, e.g. MyCars" style="flex:1; display:none; padding:7px 10px; background:#0d1117; border:1px solid var(--border); border-radius:6px; color:var(--text-bright); font-size:13px;">
+              <button type="button" class="btn btn-secondary btn-sm" id="btnToggleCustomPartitionFolder" style="white-space:nowrap;" data-i18n="mods.btnToggleCustomFolder">➕ Custom</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="btnBrowsePartitionFolder" style="white-space:nowrap;" title="Browse and pick a folder in the system dialog" data-i18n="mods.btnBrowseFolder" data-i18n-title="mods.browsePartitionFolderBtnTitle">📁 Browse</button>
+            </div>
+          </div>
+
+          <div style="font-size:12px; color:var(--text-muted); background:rgba(255,255,255,0.03); padding:8px 12px; border-radius:6px; border:1px solid var(--border); margin-bottom:6px;">
+            <span style="color:var(--accent-cyan); font-weight:600;" data-i18n="mods.modalFullTargetPreview">Target Full Path:</span>
+            <span id="partitionModalTargetFullPath" style="font-family:var(--font-mono); word-break:break-all; color:var(--text-bright);">--</span>
+          </div>
+        </div>
+        <div class="modal-footer" style="padding:12px 20px; display:flex; justify-content:flex-end; gap:8px;">
+          <button type="button" class="btn btn-secondary btn-sm" id="cancelPartitionFolderModal" data-i18n="common.cancel">Cancel</button>
+          <button type="button" class="btn btn-primary btn-sm" id="savePartitionFolderModal" data-i18n="common.saveAndApply">Confirm & Apply</button>
+        </div>
+      </div>
+    </div>
+
+    <dialog id="installAssetDialog" class="asset-dialog" aria-labelledby="assetDialogTitle">
+      <div class="asset-dialog-header">
+        <div class="asset-dialog-heading">
+          <h3 id="assetDialogTitle" data-i18n="assets.title">Mod Files</h3>
+          <span id="assetPackageName"></span>
+        </div>
+        <button type="button" class="close-btn" id="assetDialogClose" aria-label="Close" data-i18n-aria-label="assets.close">&times;</button>
+      </div>
+      <div id="assetCategoryTabs" class="asset-category-tabs" role="tablist" aria-label="File type" data-i18n-aria-label="assets.categoryTabsLabel"></div>
+      <div class="asset-search-row">
+        <input type="search" id="assetFileSearch" data-i18n-placeholder="assets.search" placeholder="Search filenames or paths" aria-label="Search filenames or paths" data-i18n-aria-label="assets.search">
+        <span id="assetVisibleCount"></span>
+        <div class="asset-actions-group" id="assetActionsGroup">
+          <button type="button" class="btn btn-secondary btn-sm" id="assetSelectAll" data-i18n="assets.selectAll">Select All</button>
+          <button type="button" class="btn btn-secondary btn-sm" id="assetDeselectAll" data-i18n="assets.deselectAll">Deselect All</button>
+        </div>
+      </div>
+      <div id="assetFilePanel" class="asset-file-panel" role="tabpanel">
+        <div id="assetFileList" class="asset-file-list"></div>
+        <section id="assetTextPane" class="asset-text-pane" hidden>
+          <div class="asset-text-toolbar">
+            <span id="assetTextPath"></span>
+            <span id="assetConfigEditHint" class="asset-config-hint" style="display:none;" data-i18n="assets.configEditHint">✏️ Editable configuration lines (Fallback)</span>
+            <button type="button" class="btn btn-secondary btn-sm" id="assetCopyText" data-i18n="assets.copy" disabled>Copy Text</button>
+          </div>
+          <div class="asset-text-status-row" role="status">
+            <span id="assetTextStatus"></span>
+            <button type="button" class="btn btn-secondary btn-sm" id="assetRetryText" data-i18n="assets.retry" hidden>Retry</button>
+          </div>
+          <pre id="assetTextContent" tabindex="0"></pre>
+          <textarea id="assetConfigEditor" class="asset-config-editor" spellcheck="false" style="display:none;" placeholder="Edit configuration lines here..." data-i18n-placeholder="assets.configEditorPlaceholder"></textarea>
+        </section>
+      </div>
+      <div class="asset-dialog-footer">
+        <div class="asset-footer-info">
+          <span id="assetExcludedSummary" class="asset-excluded-summary"></span>
+        </div>
+        <div class="asset-footer-actions">
+          <button type="button" class="btn btn-primary btn-sm" id="assetApplyBtn" data-i18n="assets.apply">Apply & Save</button>
+        </div>
+      </div>
+    </dialog>
+
+    <!-- App Footer -->
+    <footer class="app-footer">
+      <span id="buildStamp" title="Frontend build version" data-i18n-title="footer.buildStampTitle">build 0910c</span>
+    </footer>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="toast"></div>
+  </div>
+
+  <script src="i18n.js?v=20260910-brand1"></script>
+  <script src="install-assets.js?v=20260910-i18n6"></script>
+  <script src="install-reminder.js?v=20260910-reminder1"></script>
+  <script src="app.js?v=20260910-brand1"></script>
+</body>
+</html>
