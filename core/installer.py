@@ -78,6 +78,95 @@ def _file_sha1(path: str) -> str:
         return ""
 
 
+PAINTJOB_DIR_PAT = re.compile(
+    r'(?:^|[\\/])(?:paintjobs?|paint[ _-]jobs?|paints?|pj|liver(?:y|ies))(?:$|[\\/])',
+    re.I
+)
+PJ_SUFFIX_PAT = re.compile(
+    r'^(?:[_-]?(?:pj|paintjob|livery)?[_-]?([1-5]))$',
+    re.I
+)
+PJ_PREFIX_PAT = re.compile(
+    r'^(?:pj|paintjob|livery)[_-](.+)$',
+    re.I
+)
+
+
+def resolve_txd_model_info(
+    fname: str,
+    rel: str,
+    candidate_models: List[str],
+    known_vanilla_models: Optional[Any] = None
+) -> Dict[str, Any]:
+    """Identifies which vehicle model a TXD belongs to, and whether it is a paintjob.
+
+    Returns:
+        {
+            "model": str,               # identified vehicle model (lowercase)
+            "is_paintjob": bool,        # True if paintjob texture
+            "paintjob_num": Optional[int], # 1..5 if numbered paintjob
+            "suffix": str,              # canonical suffix, e.g. "1" or ""
+            "raw_suffix": str           # raw matched suffix string
+        }
+    """
+    base, _ = os.path.splitext(fname.lower())
+    norm_rel = rel.replace("\\", "/").lower() if rel else fname.lower()
+    in_pj_folder = bool(PAINTJOB_DIR_PAT.search(norm_rel))
+
+    models = sorted({m.strip().lower() for m in (candidate_models or []) if m and m.strip()}, key=len, reverse=True)
+    vanilla = sorted({m.strip().lower() for m in (known_vanilla_models or []) if m and m.strip()}, key=len, reverse=True)
+
+    # 1. Exact match against candidate models
+    for m in models:
+        if base == m:
+            return {"model": m, "is_paintjob": False, "paintjob_num": None, "suffix": "", "raw_suffix": ""}
+
+    # 2. Pattern match: <candidate_model><paintjob_suffix>
+    for m in models:
+        if base.startswith(m) and len(base) > len(m):
+            rest = base[len(m):]
+            m_suf = PJ_SUFFIX_PAT.match(rest)
+            if m_suf:
+                num = int(m_suf.group(1))
+                return {"model": m, "is_paintjob": True, "paintjob_num": num, "suffix": str(num), "raw_suffix": rest}
+
+    # 3. Prefix match: pj_<candidate_model> or paintjob_<candidate_model>
+    m_pre = PJ_PREFIX_PAT.match(base)
+    if m_pre:
+        rem = m_pre.group(1)
+        for m in models:
+            if rem == m or rem.startswith(m):
+                m_num = re.search(r'([1-5])', rem[len(m):])
+                num = int(m_num.group(1)) if m_num else None
+                return {"model": m, "is_paintjob": True, "paintjob_num": num, "suffix": str(num) if num else "", "raw_suffix": base}
+
+    # 4. If in paintjob folder
+    if in_pj_folder:
+        for m in models:
+            if m in norm_rel or m in base:
+                m_num = re.search(r'([1-5])', base)
+                num = int(m_num.group(1)) if m_num else None
+                return {"model": m, "is_paintjob": True, "paintjob_num": num, "suffix": str(num) if num else "", "raw_suffix": base}
+        if len(models) == 1:
+            m = models[0]
+            m_num = re.search(r'([1-5])', base)
+            num = int(m_num.group(1)) if m_num else None
+            return {"model": m, "is_paintjob": True, "paintjob_num": num, "suffix": str(num) if num else "", "raw_suffix": base}
+
+    # 5. Check against vanilla models
+    for m in vanilla:
+        if base == m:
+            return {"model": m, "is_paintjob": False, "paintjob_num": None, "suffix": "", "raw_suffix": ""}
+        if base.startswith(m) and len(base) > len(m):
+            rest = base[len(m):]
+            m_suf = PJ_SUFFIX_PAT.match(rest)
+            if m_suf:
+                num = int(m_suf.group(1))
+                return {"model": m, "is_paintjob": True, "paintjob_num": num, "suffix": str(num), "raw_suffix": rest}
+
+    return {"model": base, "is_paintjob": False, "paintjob_num": None, "suffix": "", "raw_suffix": ""}
+
+
 _DOC_TEXT_EXTENSIONS = {".txt", ".readme", ".md", ".me", ".log", ".cfg", ".dat", ".ide", ".ini"}
 
 
@@ -452,13 +541,31 @@ class ModInstaller:
                     if _p not in _carmods_parts_by_model[_cm]:
                         _carmods_parts_by_model[_cm].append(_p)
 
+        # Resolve vehicle model and paintjob metadata for all primary TXDs
+        mod_candidate_models = [v["model"].lower() for v in target_vehicles if v.get("model")]
+        if not mod_candidate_models:
+            mod_candidate_models = [f["model"].lower() for f in primary_dffs if f.get("model")]
+        known_vanilla = set(MODEL_TO_ID.keys())
+
+        for txd_entry in primary_txds:
+            info = resolve_txd_model_info(
+                txd_entry["name"],
+                txd_entry.get("rel", ""),
+                candidate_models=mod_candidate_models,
+                known_vanilla_models=known_vanilla
+            )
+            txd_entry["model"] = info["model"]
+            txd_entry["is_paintjob"] = info["is_paintjob"]
+            txd_entry["paintjob_num"] = info.get("paintjob_num")
+            txd_entry["paintjob_suffix"] = info.get("suffix", "")
+
         # Enrich each target vehicle with specific assets and config indicators
         for v in target_vehicles:
             m = v["model"]
             v["source_model"] = m
             v["target_model"] = m
-            v["dff_files"] = [f["name"] for f in primary_dffs if f["model"] == m or f["model"].startswith(m)]
-            v["txd_files"] = [f["name"] for f in primary_txds if f["model"] == m or f["model"].startswith(m)]
+            v["dff_files"] = [f["name"] for f in primary_dffs if f["model"] == m]
+            v["txd_files"] = [f["name"] for f in primary_txds if f["model"] == m]
             
             # Find vehicle-specific fxt if present
             v_fxt_key = _ide_game_names.get(m.lower(), m.upper()).upper()
@@ -495,6 +602,8 @@ class ModInstaller:
 
             if not v_fxt_name:
                 v_fxt_name = v.get("name", m.upper())
+            elif v.get("is_addon") and v_has_author_fxt:
+                v["name"] = v_fxt_name
 
             v["fxt_proposal"] = {
                 "key": v_fxt_key,
@@ -1091,58 +1200,81 @@ class ModInstaller:
                         dest_name = fname
                         if base in excluded_tuning_parts:
                             should_copy = False
-                    else:
-                        # Primary vehicle model / texture
-                        matched_v = None
-                        suffix = ""
-                        if base in active_sources:
-                            matched_v = active_sources[base]
-                        else:
-                            for sm, v_obj in active_sources.items():
-                                if base.startswith(sm) and len(base) > len(sm):
-                                    rest = base[len(sm):]
-                                    if rest in ["1", "2", "3", "4", "5", "_1", "_2"]:
-                                        matched_v = v_obj
-                                        suffix = rest
-                                        break
+                    elif ext == ".txd":
+                        # Primary vehicle texture or paintjob
+                        rel_curr = os.path.relpath(src_file, inspect_dir)
+                        all_cands = list(active_sources.keys()) + list(skipped_sources)
+                        txd_res = resolve_txd_model_info(fname, rel_curr, all_cands, set(MODEL_TO_ID.keys()))
+                        src_model = txd_res["model"].lower()
 
-                        if matched_v:
+                        if src_model in skipped_sources:
+                            # Asset of a vehicle deselected in wizard: do not copy
+                            should_copy = False
+                        elif src_model in active_sources:
+                            matched_v = active_sources[src_model]
                             if not matched_v.get("copy_files", True):
                                 should_copy = False
                             else:
                                 _vidx_task = vehicles.index(matched_v)
                                 t_model = matched_v["target_model"].lower()
                                 out_name = t_model
-                                if ext == ".txd" and matched_v.get("target_txd"):
+                                if matched_v.get("target_txd"):
                                     out_name = str(matched_v["target_txd"]).strip().lower() or t_model
-                                dest_name = f"{out_name}{suffix}{ext}"
-                        elif any(
-                            base == sm
-                            or (base.startswith(sm) and base[len(sm):] in ("1", "2", "3", "4", "5", "_1", "_2"))
-                            for sm in skipped_sources
-                        ):
-                            # Asset of a vehicle deselected in the wizard: never
-                            # rename/copy it onto the selected vehicle.
-                            should_copy = False
-                        else:
-                            if len(vehicles) == 1:
-                                matched_v = vehicles[0]
-                                if not matched_v.get("copy_files", True):
-                                    should_copy = False
+                                if txd_res["is_paintjob"]:
+                                    pj_num = txd_res.get("paintjob_num")
+                                    if pj_num:
+                                        dest_name = f"{out_name}{pj_num}.txd"
+                                    elif txd_res.get("raw_suffix"):
+                                        dest_name = f"{out_name}{txd_res['raw_suffix']}.txd"
+                                    else:
+                                        dest_name = fname
                                 else:
-                                    _vidx_task = 0
-                                    t_model = matched_v["target_model"].lower()
-                                    out_name = t_model
-                                    if ext == ".txd" and matched_v.get("target_txd"):
-                                        out_name = str(matched_v["target_txd"]).strip().lower() or t_model
-                                    for s in ["1", "2", "3", "4", "5"]:
-                                        if base.endswith(s) and len(base) > len(s):
-                                            suffix = s
-                                            break
-                                    dest_name = f"{out_name}{suffix}{ext}"
+                                    dest_name = f"{out_name}.txd"
+                        elif len(vehicles) == 1:
+                            matched_v = vehicles[0]
+                            if not matched_v.get("copy_files", True):
+                                should_copy = False
                             else:
-                                # In multi-car pack, keep original name to prevent overwriting
-                                dest_name = fname
+                                _vidx_task = 0
+                                t_model = matched_v["target_model"].lower()
+                                out_name = t_model
+                                if matched_v.get("target_txd"):
+                                    out_name = str(matched_v["target_txd"]).strip().lower() or t_model
+                                if txd_res["is_paintjob"]:
+                                    pj_num = txd_res.get("paintjob_num")
+                                    if pj_num:
+                                        dest_name = f"{out_name}{pj_num}.txd"
+                                    elif txd_res.get("raw_suffix"):
+                                        dest_name = f"{out_name}{txd_res['raw_suffix']}.txd"
+                                    else:
+                                        dest_name = fname
+                                else:
+                                    dest_name = f"{out_name}.txd"
+                        else:
+                            # In multi-car pack with unmapped texture, preserve original name
+                            dest_name = fname
+                    elif ext == ".dff":
+                        matched_v = None
+                        if base in skipped_sources:
+                            should_copy = False
+                        elif base in active_sources:
+                            matched_v = active_sources[base]
+                            if not matched_v.get("copy_files", True):
+                                should_copy = False
+                            else:
+                                _vidx_task = vehicles.index(matched_v)
+                                t_model = matched_v["target_model"].lower()
+                                dest_name = f"{t_model}.dff"
+                        elif len(vehicles) == 1:
+                            matched_v = vehicles[0]
+                            if not matched_v.get("copy_files", True):
+                                should_copy = False
+                            else:
+                                _vidx_task = 0
+                                t_model = matched_v["target_model"].lower()
+                                dest_name = f"{t_model}.dff"
+                        else:
+                            dest_name = fname
                 elif ext in _DOC_TEXT_EXTENSIONS and len(all_vehicles) > 1:
                     # Route config documents (readme/txt/ide/cfg) to the vehicle
                     # they declare instead of dumping every one into the first
@@ -1511,13 +1643,19 @@ class ModInstaller:
                         tokens[0] = t_model.lower()
                         if excluded_tuning_parts:
                             tokens = [tokens[0]] + [tok for tok in tokens[1:] if tok.lower() not in excluded_tuning_parts]
+                        tokens = [tokens[0]] + [tok for tok in tokens[1:] if not self.merger.tuning_mgr.is_mirror_counterpart(tok)]
+                        carmods_body = self.merger.merge_generic_carmods_parts(t_model, tokens[1:])
+                        tokens = [tokens[0]] + carmods_body
                         cm_copy["raw"] = ", ".join(tokens)
                         cm_copy["model"] = t_model.lower()
                         cm_copy["model_name"] = t_model.lower()
                         if "part_names" in cm_copy:
-                            cm_copy["part_names"] = [p for p in cm_copy["part_names"] if p.lower() not in excluded_tuning_parts]
+                            cm_copy["part_names"] = list(carmods_body)
                         if "parts" in cm_copy:
-                            cm_copy["parts"] = [p for p in cm_copy["parts"] if p.get("part_name", "").lower() not in excluded_tuning_parts]
+                            cm_copy["parts"] = [
+                                p for p in cm_copy["parts"]
+                                if p.get("part_name", "").lower() in carmods_body
+                            ]
                     final_carmods.append(cm_copy)
             mod_info["parsed"]["carmods"] = final_carmods
 

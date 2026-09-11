@@ -56,6 +56,7 @@ class ConfigMerger:
         carmods_parsed = parsed_mod["parsed"]["carmods"]
         tuning_dffs = parsed_mod["files"].get("tuning_dffs", [])
         custom_tuning_ids = parsed_mod.get("custom_tuning_ids") or {}
+        allocated_tuning_ids = dict(custom_tuning_ids)
         shopping_parsed = parsed_mod["parsed"].get("shopping") or {}
         author_carmods_dict = {e["part_name"].lower(): e for e in shopping_parsed.get("carmods", [])}
         author_workshops = shopping_parsed.get("workshops") or {}
@@ -158,13 +159,16 @@ class ConfigMerger:
                         if pname not in parts:
                             parts.append(pname)
                 if parts:
-                    mods_line = f"{cm_model}, " + ", ".join(parts)
-                    changes["carmods_dat"]["actions"].append({
-                        "type": "replace_or_insert_car_mods",
-                        "car": cm_model,
-                        "line": mods_line,
-                        "desc": f"Assign {len(parts)} tuning parts to {cm_model}"
-                    })
+                    vehicle_parts = [p for p in parts if not self.tuning_mgr.is_mirror_counterpart(p)]
+                    vehicle_parts = self.merge_generic_carmods_parts(cm_model, vehicle_parts)
+                    if vehicle_parts:
+                        mods_line = f"{cm_model}, " + ", ".join(vehicle_parts)
+                        changes["carmods_dat"]["actions"].append({
+                            "type": "replace_or_insert_car_mods",
+                            "car": cm_model,
+                            "line": mods_line,
+                            "desc": f"Assign {len(vehicle_parts)} tuning parts to {cm_model}"
+                        })
                     links = self.tuning_mgr.find_mirror_links(parts)
                     existing_links = self.tuning_mgr.get_existing_link_pairs()
                     for l, r in links:
@@ -175,13 +179,14 @@ class ConfigMerger:
                             "line": f"{l}, {r}",
                             "desc": f"Register symmetrical mirror parts: {l} <-> {r}"
                         })
-                    _plan_shopping_for_parts(cm_model, parts)
+                    _plan_shopping_for_parts(cm_model, vehicle_parts)
                     missing_mods = self.tuning_mgr.generate_missing_veh_mods_entries(
-                        parts, cm_model, custom_ids=custom_tuning_ids,
+                        parts, cm_model, custom_ids=allocated_tuning_ids,
                         part_configs=author_veh_mods, dff_map=dff_map
                     )
                     for item in missing_mods:
                         pname = item["part_name"]
+                        allocated_tuning_ids[pname] = item["id"]
                         if pname not in seen_veh_mods_parts:
                             seen_veh_mods_parts.add(pname)
                             changes["veh_mods_ide"]["actions"].append({
@@ -198,23 +203,29 @@ class ConfigMerger:
                 if pname not in parts:
                     parts.append(pname)
             if parts:
-                mods_line = f"{target_model.lower()}, " + ", ".join(parts)
-                changes["carmods_dat"]["actions"].append({
-                    "type": "replace_or_insert_car_mods",
-                    "car": target_model,
-                    "line": mods_line,
-                    "desc": f"Assign {len(parts)} tuning parts to {target_model}"
-                })
+                vehicle_parts = [p for p in parts if not self.tuning_mgr.is_mirror_counterpart(p)]
+                vehicle_parts = self.merge_generic_carmods_parts(target_model, vehicle_parts)
+                if vehicle_parts:
+                    mods_line = f"{target_model.lower()}, " + ", ".join(vehicle_parts)
+                    changes["carmods_dat"]["actions"].append({
+                        "type": "replace_or_insert_car_mods",
+                        "car": target_model,
+                        "line": mods_line,
+                        "desc": f"Assign {len(vehicle_parts)} tuning parts to {target_model}"
+                    })
                 links = self.tuning_mgr.find_mirror_links(parts)
+                existing_links = self.tuning_mgr.get_existing_link_pairs()
                 for l, r in links:
+                    if frozenset((l.lower(), r.lower())) in existing_links:
+                        continue
                     changes["carmods_dat"]["actions"].append({
                         "type": "insert_link",
                         "line": f"{l}, {r}",
                         "desc": f"Register symmetrical mirror parts: {l} <-> {r}"
                     })
-                _plan_shopping_for_parts(target_model, parts)
+                _plan_shopping_for_parts(target_model, vehicle_parts)
                 missing_mods = self.tuning_mgr.generate_missing_veh_mods_entries(
-                    parts, target_model, custom_ids=custom_tuning_ids,
+                    parts, target_model, custom_ids=allocated_tuning_ids,
                     part_configs=author_veh_mods, dff_map=dff_map
                 )
                 for item in missing_mods:
@@ -491,7 +502,13 @@ class ConfigMerger:
 
         for a in actions:
             if a["type"] == "replace_or_insert_car_mods":
-                cars_to_replace[a["car"].lower()] = a["line"].strip() + "\n"
+                c = a["car"].lower()
+                l = a["line"].strip()
+                toks = [t.strip() for t in l.split(",") if t.strip()]
+                if len(toks) > 1:
+                    toks = [toks[0]] + [t for t in toks[1:] if not self.tuning_mgr.is_mirror_counterpart(t)]
+                    l = ", ".join(toks)
+                cars_to_replace[c] = l + "\n"
             elif a["type"] == "insert_link":
                 new_links.append(a["line"].strip() + "\n")
 
@@ -1195,6 +1212,75 @@ class ConfigMerger:
                 except Exception:
                     pass
         return None, None
+
+    def get_original_generic_carmods_parts(self, model: str) -> Dict[str, List[str]]:
+        """
+        Reads baseline/active carmods.dat for model (shadow first, vanilla fallback).
+        Strictly matches and returns specific generic upgrade categories that the vehicle originally had:
+        - nitro: e.g. ['nto_b_l', 'nto_b_s', 'nto_b_tw'] or ['nto_b_s']
+        - hydraulics: e.g. ['hydralics']
+        - stereo: e.g. ['stereo']
+        Only returns parts that were explicitly present in the vehicle's original carmods line.
+        """
+        model_clean = (model or "").strip().lower()
+        res = {"nitro": [], "hydraulics": [], "stereo": []}
+        if not model_clean:
+            return res
+
+        shadow_m = os.path.join(self.shadow_dir, "carmods.dat")
+        vanilla_m = os.path.join(self.game_path, "data", "carmods.dat") if self.game_path else ""
+        m_line, _ = self._find_model_line_in_carmods(shadow_m, vanilla_m, model_clean)
+        if not m_line:
+            return res
+
+        clean = m_line.split("#")[0].split(";")[0].split("//")[0].strip()
+        parts = [p.strip().lower() for p in clean.split(",") if p.strip()]
+        if len(parts) <= 1:
+            return res
+
+        for p in parts[1:]:
+            if p.startswith("nto_"):
+                if p not in res["nitro"]:
+                    res["nitro"].append(p)
+            elif p in ("hydralics", "hydraulics"):
+                if p not in res["hydraulics"]:
+                    res["hydraulics"].append(p)
+            elif p in ("stereo", "bass", "bassboost"):
+                if p not in res["stereo"]:
+                    res["stereo"].append(p)
+
+        return res
+
+    def merge_generic_carmods_parts(self, model: str, current_parts: List[str]) -> List[str]:
+        """
+        Strictly preserves original vehicle's generic parts (nitro, hydraulics, stereo)
+        if the vehicle originally had them and current parts list does not already contain that category.
+        """
+        orig = self.get_original_generic_carmods_parts(model)
+        merged = list(current_parts)
+
+        # 1. Nitro: only add if current parts has NO nitro, and original vehicle had nitro
+        has_nitro = any(p.lower().startswith("nto_") for p in merged)
+        if not has_nitro and orig["nitro"]:
+            for np in orig["nitro"]:
+                if np not in merged:
+                    merged.append(np)
+
+        # 2. Hydraulics: only add if current parts has NO hydraulics, and original vehicle had hydraulics
+        has_hydraulics = any(p.lower() in ("hydralics", "hydraulics") for p in merged)
+        if not has_hydraulics and orig["hydraulics"]:
+            for hp in orig["hydraulics"]:
+                if hp not in merged:
+                    merged.append(hp)
+
+        # 3. Stereo: only add if current parts has NO stereo, and original vehicle had stereo
+        has_stereo = any(p.lower() in ("stereo", "bass", "bassboost") for p in merged)
+        if not has_stereo and orig["stereo"]:
+            for sp in orig["stereo"]:
+                if sp not in merged:
+                    merged.append(sp)
+
+        return merged
 
     def _resolve_source(self, line, src, vanilla_path, finder, key):
         """A shadow copy is usually a full baseline copy, so a matching line is

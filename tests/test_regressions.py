@@ -3522,6 +3522,206 @@ class TextEncodingDetectionRegression(unittest.TestCase):
             self.assertEqual(encoded, data, f"{name} did not round-trip via {codec}")
 
 
+    def test_mirror_parts_excluded_from_carmods_vehicle_lines(self):
+        """
+        Mirror counterparts (e.g. wg_r_*, bntr_*) must NEVER appear on the
+        vehicle line in carmods.dat because they are not sold in shopping.dat
+        and will crash the game when entering a tuning garage.
+        """
+        merger = ConfigMerger(str(self.root / "shadow"), str(self.root / "game"))
+        mod_info = {
+            "success": True,
+            "target_model": "stratum",
+            "files": {
+                "dff_files": ["stratum.dff"],
+                "tuning_dffs": [
+                    {"name": "wg_l_a_st.dff", "path": "/dummy/wg_l_a_st.dff"},
+                    {"name": "wg_r_a_st.dff", "path": "/dummy/wg_r_a_st.dff"},
+                    {"name": "fbmp_a_st.dff", "path": "/dummy/fbmp_a_st.dff"},
+                ]
+            },
+            "parsed": {
+                "handling": [], "ide": [], "carcols": [], "carmods": [],
+                "veh_mods_ide": [], "shopping": {}, "fxt": [], "fxt_text": [],
+                "audio_lines": [], "special_features": []
+            }
+        }
+        plan = merger.plan_merge(mod_info)
+        actions = plan["changes"]["carmods_dat"]["actions"]
+        car_actions = [a for a in actions if a["type"] == "replace_or_insert_car_mods"]
+        self.assertEqual(len(car_actions), 1)
+        line = car_actions[0]["line"]
+        self.assertIn("wg_l_a_st", line)
+        self.assertIn("fbmp_a_st", line)
+        self.assertNotIn("wg_r_a_st", line)
+
+
+    def test_generic_carmods_parts_strictly_preserved(self):
+        """
+        Vehicles with nitro, hydraulics, or stereo in baseline carmods must have
+        those exact generic upgrades strictly preserved when fallback carmods are generated,
+        without adding upgrades the vehicle never had.
+        """
+        game_dir = self.root / "game_carmods_test"
+        (game_dir / "data").mkdir(parents=True, exist_ok=True)
+        (game_dir / "data" / "carmods.dat").write_text(
+            "mods\n"
+            "stratum, exh_a_st, nto_b_l, nto_b_s, nto_b_tw\n"
+            "supergt, nto_b_s\n"
+            "lowrider, exh_lr, hydralics, stereo\n"
+            "copcar, none\n"
+            "end\n",
+            encoding="utf-8"
+        )
+        merger = ConfigMerger(str(self.root / "shadow_generic"), str(game_dir))
+
+        # 1. Stratum: had nitro (all 3), no hydraulics, no stereo
+        gen_st = merger.get_original_generic_carmods_parts("stratum")
+        self.assertEqual(gen_st["nitro"], ["nto_b_l", "nto_b_s", "nto_b_tw"])
+        self.assertEqual(gen_st["hydraulics"], [])
+        self.assertEqual(gen_st["stereo"], [])
+
+        merged_st = merger.merge_generic_carmods_parts("stratum", ["exh_a_st", "fbmp_a_st"])
+        self.assertIn("nto_b_l", merged_st)
+        self.assertIn("nto_b_s", merged_st)
+        self.assertIn("nto_b_tw", merged_st)
+        self.assertNotIn("hydralics", merged_st)
+        self.assertNotIn("stereo", merged_st)
+
+        # If current parts already had nitro, does not duplicate or overwrite
+        merged_st_existing = merger.merge_generic_carmods_parts("stratum", ["exh_a_st", "nto_b_s"])
+        self.assertEqual(merged_st_existing, ["exh_a_st", "nto_b_s"])
+
+        # 2. SuperGT: had only nto_b_s
+        gen_sgt = merger.get_original_generic_carmods_parts("supergt")
+        self.assertEqual(gen_sgt["nitro"], ["nto_b_s"])
+        self.assertEqual(gen_sgt["hydraulics"], [])
+        merged_sgt = merger.merge_generic_carmods_parts("supergt", ["exh_sgt"])
+        self.assertEqual(merged_sgt, ["exh_sgt", "nto_b_s"])
+
+        # 3. Lowrider: had hydraulics and stereo, but no nitro
+        gen_low = merger.get_original_generic_carmods_parts("lowrider")
+        self.assertEqual(gen_low["nitro"], [])
+        self.assertEqual(gen_low["hydraulics"], ["hydralics"])
+        self.assertEqual(gen_low["stereo"], ["stereo"])
+        merged_low = merger.merge_generic_carmods_parts("lowrider", ["exh_custom"])
+        self.assertIn("hydralics", merged_low)
+        self.assertIn("stereo", merged_low)
+        self.assertNotIn("nto_b_l", merged_low)
+
+        # 4. Copcar: had no tuning upgrades
+        gen_cop = merger.get_original_generic_carmods_parts("copcar")
+        self.assertEqual(gen_cop["nitro"], [])
+        self.assertEqual(gen_cop["hydraulics"], [])
+        self.assertEqual(gen_cop["stereo"], [])
+        merged_cop = merger.merge_generic_carmods_parts("copcar", ["lightbar"])
+        self.assertEqual(merged_cop, ["lightbar"])
+
+    def test_multivehicle_addon_tuning_id_allocation_no_collision(self):
+        """
+        Verify that in a multi-vehicle mod pack with shared and vehicle-exclusive tuning parts,
+        IDs allocated in veh_mods.ide are strictly unique with zero collisions.
+        """
+        temp_dir = tempfile.mkdtemp()
+        try:
+            shadow = os.path.join(temp_dir, "modloader", "Modded Cars")
+            os.makedirs(shadow, exist_ok=True)
+            os.makedirs(os.path.join(temp_dir, "data"), exist_ok=True)
+            with open(os.path.join(shadow, "veh_mods.ide"), "w") as f:
+                f.write("objs\nend\n")
+            with open(os.path.join(shadow, "carmods.dat"), "w") as f:
+                f.write("mods\nend\nlink\nend\n")
+
+            merger = ConfigMerger(shadow_dir=shadow, game_path=temp_dir)
+            parsed_mod = {
+                "success": True,
+                "target_model": "car_a",
+                "target_models": ["car_a", "car_b"],
+                "files": {"tuning_dffs": [], "tuning_txds": []},
+                "parsed": {
+                    "handling": [],
+                    "ide": [],
+                    "carcols": [],
+                    "carmods": [
+                        {"model_name": "car_a", "part_names": ["exh_shared", "spl_a_exclusive"]},
+                        {"model_name": "car_b", "part_names": ["exh_shared", "spl_b_exclusive"]},
+                    ],
+                    "veh_mods_ide": [
+                        {"part_name": "exh_shared", "txd_name": "car_a", "draw_dist": 100.0, "flags": 2097152},
+                        {"part_name": "spl_a_exclusive", "txd_name": "car_a", "draw_dist": 100.0, "flags": 2101248},
+                        {"part_name": "spl_b_exclusive", "txd_name": "car_b", "draw_dist": 100.0, "flags": 2101248},
+                    ],
+                    "shopping": {},
+                    "fxt": [],
+                    "fxt_text": [],
+                    "audio_lines": [],
+                    "special_features": []
+                }
+            }
+            plan = merger.plan_merge(parsed_mod)
+            vm_actions = plan["changes"]["veh_mods_ide"]["actions"]
+            self.assertEqual(len(vm_actions), 3)
+
+            allocated_ids = [a["id"] for a in vm_actions]
+            allocated_parts = [a["part"] for a in vm_actions]
+
+            # All 3 parts must have distinct IDs
+            self.assertEqual(len(set(allocated_ids)), 3, f"Duplicate IDs detected: {allocated_ids}")
+            self.assertEqual(set(allocated_parts), {"exh_shared", "spl_a_exclusive", "spl_b_exclusive"})
+
+            # Verify apply_merge writes all 3 unique entries
+            res = merger.apply_merge(parsed_mod)
+            self.assertTrue(res["success"])
+            with open(os.path.join(shadow, "veh_mods.ide")) as f:
+                vm_content = f.read()
+            self.assertIn("exh_shared", vm_content)
+            self.assertIn("spl_a_exclusive", vm_content)
+            self.assertIn("spl_b_exclusive", vm_content)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_multivehicle_revert_preserves_shared_tuning_parts(self):
+        """
+        Verify that uninstalling one vehicle of a shared-tuning pack preserves
+        tuning parts still referenced by other active vehicles in carmods.dat.
+        """
+        from core.cleaner import ModCleaner
+        temp_dir = tempfile.mkdtemp()
+        try:
+            shadow = os.path.join(temp_dir, "modloader", "Modded Cars")
+            vanilla = os.path.join(temp_dir, "data")
+            os.makedirs(shadow, exist_ok=True)
+            os.makedirs(vanilla, exist_ok=True)
+
+            # Pre-populate shadow files with two vehicles sharing exh_shared
+            with open(os.path.join(shadow, "carmods.dat"), "w") as f:
+                f.write("mods\ncar_a, exh_shared, spl_a\ncar_b, exh_shared, spl_b\nend\n")
+            with open(os.path.join(shadow, "veh_mods.ide"), "w") as f:
+                f.write("objs\n11747, exh_shared, car_a, 100, 2097152\n11748, spl_a, car_a, 100, 2101248\n11749, spl_b, car_b, 100, 2101248\nend\n")
+            with open(os.path.join(shadow, "shopping.dat"), "w") as f:
+                f.write("section prices\nsection CarMods\nexh_shared E_SH respect 0 sexy 0 500\nspl_a S_A respect 0 sexy 0 500\nspl_b S_B respect 0 sexy 0 500\nend\nend\n")
+
+            cleaner = ModCleaner(game_path=temp_dir)
+            # Revert car_a
+            cleaner._revert_veh_mods("car_a", {"exh_shared", "spl_a"})
+            cleaner._revert_shopping("car_a", {"exh_shared", "spl_a"})
+
+            with open(os.path.join(shadow, "veh_mods.ide")) as f:
+                vm_after = f.read()
+            # spl_a must be gone, but exh_shared must be preserved because car_b still uses it
+            self.assertNotIn("spl_a", vm_after)
+            self.assertIn("exh_shared", vm_after)
+            self.assertIn("spl_b", vm_after)
+
+            with open(os.path.join(shadow, "shopping.dat")) as f:
+                shop_after = f.read()
+            self.assertNotIn("spl_a", shop_after)
+            self.assertIn("exh_shared", shop_after)
+            self.assertIn("spl_b", shop_after)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

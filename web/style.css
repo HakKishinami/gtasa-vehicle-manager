@@ -2249,6 +2249,7 @@ pre {
 .asset-relative-path { color: var(--text-muted); font-family: var(--font-mono); font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; }
 .asset-model-label { color: var(--accent-cyan); }
 .asset-model-label.is-replacement { color: var(--accent-amber); }
+.asset-model-label.is-paintjob { color: var(--accent-purple); }
 .asset-size { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .asset-file-panel.asset-text-layout { display: grid; grid-template-columns: minmax(200px, 30%) minmax(0, 1fr); }
 .asset-document-list { border-right: 1px solid var(--border); background: #11161c; }

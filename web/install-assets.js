@@ -191,6 +191,51 @@
     tableChk.indeterminate = !allChecked && !noneChecked;
   }
 
+  function resolveVehicleCell(file) {
+    const model = (file.model || "").toLowerCase();
+    let matched = null;
+    if (model) {
+      if (data && Array.isArray(data.target_vehicles)) {
+        matched = data.target_vehicles.find(v => (v.model || "").toLowerCase() === model);
+      }
+      if (!matched && Array.isArray(vehicles)) {
+        matched = vehicles.find(v => (v.model || "").toLowerCase() === model);
+      }
+    }
+
+    let text = "";
+    let isReplacement = false;
+    let isPaintjob = Boolean(file.is_paintjob);
+
+    if (matched) {
+      const vName = matched.name || matched.model.toUpperCase();
+      if (matched.is_addon) {
+        const modelTag = (matched.model && matched.name && matched.model.toLowerCase() !== matched.name.toLowerCase())
+          ? ` [${matched.model}]` : "";
+        text = `${t("assets.addon", "Addon")} ${vName}${modelTag}`;
+      } else {
+        text = `${t("assets.replacement", "Replaces")} ${vName}`;
+        isReplacement = true;
+      }
+    } else if (model) {
+      text = model.toUpperCase();
+    } else {
+      text = "-";
+    }
+
+    if (isPaintjob) {
+      const pjText = file.paintjob_num
+        ? t("assets.paintjobNum", "Paintjob {0}").replace("{0}", file.paintjob_num)
+        : t("assets.paintjob", "Paintjob");
+      text = text !== "-" ? `${text} (${pjText})` : pjText;
+    }
+
+    const cell = el("td", "asset-model-label", text);
+    if (isReplacement) cell.classList.add("is-replacement");
+    if (isPaintjob) cell.classList.add("is-paintjob");
+    return cell;
+  }
+
   function renderFiles() {
     const query = search.value.trim().toLowerCase();
     visible = (groups[category] || []).filter(file => pathLabel(file).toLowerCase().includes(query));
@@ -317,11 +362,7 @@
       name.append(nameText, tag);
 
       const location = el("td", "asset-relative-path", pathLabel(file));
-      const model = file.model || "";
-      const native = vehicles.find(v => v.model.toLowerCase() === model.toLowerCase());
-      const modelCell = el("td", "asset-model-label", native
-        ? `${t("assets.replacement")} ${native.name}` : model.toUpperCase() || "-");
-      if (native) modelCell.classList.add("is-replacement");
+      const modelCell = resolveVehicleCell(file);
 
       row.append(checkTd, name, location, modelCell, el("td", "asset-size", sizeLabel(file.size || 0)));
       body.appendChild(row);

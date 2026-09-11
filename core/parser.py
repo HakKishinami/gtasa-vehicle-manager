@@ -513,9 +513,10 @@ class DualTrackParser:
         if len(parts) != 5:
             return False
 
-        # Token 0: numeric ID or common placeholder (ID, [ID], XXX, ???, etc.)
+        # Token 0: numeric ID or common placeholder (ID, [ID], [YOUR ID], XXX, ???, etc.)
         token0 = parts[0].strip().lower()
-        if not (token0.isdigit() or token0 in ("id", "[id]", "xxx", "xxxx", "???", "n/a", "-1", "none", "your_id", "your id")):
+        t0_clean = re.sub(r'[\[\]\(\)\s_-]', '', token0)
+        if not (token0.isdigit() or any(p in t0_clean for p in ("id", "xxx", "?", "na", "none")) or token0 in ("-1", "")):
             return False
 
         # Token 1: part name

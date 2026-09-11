@@ -595,6 +595,22 @@ class ModCleaner:
         model_clean = model.lower()
         parts_to_clean = set(custom_parts) if custom_parts else set()
 
+        # Check if other active vehicles still reference any of these parts in carmods.dat
+        other_models_parts = set()
+        shadow_cm = os.path.join(self.shadow_dir, "carmods.dat")
+        if os.path.exists(shadow_cm):
+            try:
+                with open(shadow_cm, "r", encoding="utf-8", errors="ignore") as f_cm:
+                    for cm_l in f_cm:
+                        cm_s = cm_l.strip().lower()
+                        if cm_s and not cm_s.startswith("#") and not cm_s.startswith(";") and cm_s not in ("mods", "link", "end"):
+                            cm_toks = [t.strip() for t in cm_s.split(",") if t.strip()]
+                            if cm_toks and cm_toks[0] != model_clean:
+                                for p in cm_toks[1:]:
+                                    other_models_parts.add(p)
+            except Exception:
+                pass
+
         for line in lines:
             stripped = line.strip()
             if stripped.lower() == "objs":
@@ -609,10 +625,14 @@ class ModCleaner:
                 parts = [p.strip() for p in stripped.split(",") if p.strip()]
                 # Format: id, part_name, txd_name, draw_dist, flags
                 if parts[0].isdigit() and int(parts[0]) > 1193:
+                    part_pname = parts[1].lower() if len(parts) >= 2 else ""
+                    if part_pname and part_pname in other_models_parts:
+                        new_lines.append(line)
+                        continue
                     is_match = False
                     if len(parts) >= 3 and parts[2].lower() == model_clean:
                         is_match = True
-                    elif len(parts) >= 2 and parts[1].lower() in parts_to_clean:
+                    elif part_pname and part_pname in parts_to_clean:
                         is_match = True
                     if is_match:
                         removed_count += 1
@@ -655,7 +675,23 @@ class ModCleaner:
             except Exception:
                 pass
 
-        parts_to_clean = {p.lower() for p in parts_to_clean if p.lower() not in vanilla_items}
+        # Check if other active vehicles still reference any of these parts in carmods.dat
+        other_models_parts = set()
+        shadow_cm = os.path.join(self.shadow_dir, "carmods.dat")
+        if os.path.exists(shadow_cm):
+            try:
+                with open(shadow_cm, "r", encoding="utf-8", errors="ignore") as f_cm:
+                    for cm_l in f_cm:
+                        cm_s = cm_l.strip().lower()
+                        if cm_s and not cm_s.startswith("#") and not cm_s.startswith(";") and cm_s not in ("mods", "link", "end"):
+                            cm_toks = [t.strip() for t in cm_s.split(",") if t.strip()]
+                            if cm_toks and cm_toks[0] != model.lower():
+                                for p in cm_toks[1:]:
+                                    other_models_parts.add(p)
+            except Exception:
+                pass
+
+        parts_to_clean = {p.lower() for p in parts_to_clean if p.lower() not in vanilla_items and p.lower() not in other_models_parts}
         if not parts_to_clean:
             return False
 

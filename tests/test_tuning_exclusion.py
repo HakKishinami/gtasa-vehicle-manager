@@ -241,6 +241,152 @@ class TuningParserAndExclusionTests(unittest.TestCase):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+
+class PaintjobResolutionTests(unittest.TestCase):
+    def test_resolve_txd_model_info_various_patterns(self):
+        from core.installer import resolve_txd_model_info
+
+        # Exact primary texture
+        r = resolve_txd_model_info("euros.txd", "Euros/euros.txd", ["euros"])
+        self.assertEqual(r["model"], "euros")
+        self.assertFalse(r["is_paintjob"])
+        self.assertIsNone(r["paintjob_num"])
+
+        # Numbered paintjobs
+        for i in range(1, 4):
+            r = resolve_txd_model_info(f"euros{i}.txd", f"Paintjobs/euros{i}.txd", ["euros"])
+            self.assertEqual(r["model"], "euros")
+            self.assertTrue(r["is_paintjob"])
+            self.assertEqual(r["paintjob_num"], i)
+
+        # Underscore and pj suffix
+        r = resolve_txd_model_info("euros_1.txd", "euros_1.txd", ["euros"])
+        self.assertEqual(r["model"], "euros")
+        self.assertTrue(r["is_paintjob"])
+        self.assertEqual(r["paintjob_num"], 1)
+
+        r = resolve_txd_model_info("euros_pj2.txd", "euros_pj2.txd", ["euros"])
+        self.assertEqual(r["model"], "euros")
+        self.assertTrue(r["is_paintjob"])
+        self.assertEqual(r["paintjob_num"], 2)
+
+        # Solo numbered file inside Paintjobs folder
+        r = resolve_txd_model_info("1.txd", "Paintjobs/1.txd", ["euros"])
+        self.assertEqual(r["model"], "euros")
+        self.assertTrue(r["is_paintjob"])
+        self.assertEqual(r["paintjob_num"], 1)
+
+        # Named paintjob style inside Paintjobs folder
+        r = resolve_txd_model_info("Alien.txd", "Paintjobs/Alien.txd", ["euros"])
+        self.assertEqual(r["model"], "euros")
+        self.assertTrue(r["is_paintjob"])
+
+        # Generic texture
+        r = resolve_txd_model_info("vehicle.txd", "vehicle.txd", ["euros"])
+        self.assertEqual(r["model"], "vehicle")
+        self.assertFalse(r["is_paintjob"])
+
+    def test_inspect_source_resolves_paintjobs(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            # Create a mock mod folder structure
+            os.makedirs(os.path.join(temp_dir, "Euros"), exist_ok=True)
+            os.makedirs(os.path.join(temp_dir, "Paintjobs"), exist_ok=True)
+            with open(os.path.join(temp_dir, "Euros", "euros.dff"), "wb") as f:
+                f.write(b"dff")
+            with open(os.path.join(temp_dir, "Euros", "euros.txd"), "wb") as f:
+                f.write(b"txd")
+            with open(os.path.join(temp_dir, "Paintjobs", "euros1.txd"), "wb") as f:
+                f.write(b"pj1")
+            with open(os.path.join(temp_dir, "Paintjobs", "euros2.txd"), "wb") as f:
+                f.write(b"pj2")
+
+            installer = ModInstaller("E:/GTA SA US")
+            res = installer.inspect_source(temp_dir)
+            self.assertTrue(res["success"])
+            self.assertEqual(len(res["target_vehicles"]), 1)
+            self.assertEqual(res["target_vehicles"][0]["model"], "euros")
+
+            txd_files = res["asset_files"]["textures"]
+            by_name = {f["name"]: f for f in txd_files}
+            self.assertIn("euros.txd", by_name)
+            self.assertFalse(by_name["euros.txd"]["is_paintjob"])
+            self.assertEqual(by_name["euros.txd"]["model"], "euros")
+
+            self.assertIn("euros1.txd", by_name)
+            self.assertTrue(by_name["euros1.txd"]["is_paintjob"])
+            self.assertEqual(by_name["euros1.txd"]["model"], "euros")
+            self.assertEqual(by_name["euros1.txd"]["paintjob_num"], 1)
+
+            self.assertIn("euros2.txd", by_name)
+            self.assertTrue(by_name["euros2.txd"]["is_paintjob"])
+            self.assertEqual(by_name["euros2.txd"]["paintjob_num"], 2)
+
+            # Check target_vehicles[0]['txd_files'] includes all textures
+            self.assertIn("euros1.txd", res["target_vehicles"][0]["txd_files"])
+            self.assertIn("euros2.txd", res["target_vehicles"][0]["txd_files"])
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_execute_install_renames_and_excludes_paintjobs(self):
+        temp_dir = tempfile.mkdtemp()
+        game_dir = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(game_dir, "data"), exist_ok=True)
+            os.makedirs(os.path.join(game_dir, "models"), exist_ok=True)
+            with open(os.path.join(game_dir, "gta_sa.exe"), "wb") as f:
+                f.write(b"")
+            with open(os.path.join(game_dir, "data", "vehicles.ide"), "w") as f:
+                f.write("cars\n477, zr350, zr350, car, ZR350, ZR350, null, normal, 10, 0, 0, -1, 0.7, 0.7, -1\nend\n")
+
+            mod_src = os.path.join(temp_dir, "src")
+            os.makedirs(os.path.join(mod_src, "Euros"), exist_ok=True)
+            os.makedirs(os.path.join(mod_src, "Paintjobs"), exist_ok=True)
+            with open(os.path.join(mod_src, "Euros", "euros.dff"), "wb") as f:
+                f.write(b"dff_data")
+            with open(os.path.join(mod_src, "Euros", "euros.txd"), "wb") as f:
+                f.write(b"txd_data")
+            with open(os.path.join(mod_src, "Paintjobs", "euros1.txd"), "wb") as f:
+                f.write(b"pj1_data")
+            with open(os.path.join(mod_src, "Paintjobs", "euros2.txd"), "wb") as f:
+                f.write(b"pj2_data")
+
+            installer = ModInstaller(game_dir)
+            # Test installing with remap to zr350 and excluding euros2.txd
+            params = {
+                "inspect_dir": mod_src,
+                "folder_name": "Test_Euros",
+                "subfolder": "Modded Cars",
+                "generate_fxt": False,
+                "excluded_files": ["Paintjobs/euros2.txd"],
+                "vehicles": [{
+                    "source_model": "euros",
+                    "target_model": "zr350",
+                    "is_addon": False,
+                    "copy_files": True
+                }]
+            }
+            res = installer.execute_install(params)
+            self.assertTrue(res["success"])
+
+            installed_dir = os.path.join(game_dir, "modloader", "Modded Cars", "Test_Euros")
+            self.assertTrue(os.path.exists(installed_dir))
+            installed_files = os.listdir(installed_dir)
+
+            # euros.dff -> zr350.dff
+            self.assertIn("zr350.dff", installed_files)
+            # euros.txd -> zr350.txd
+            self.assertIn("zr350.txd", installed_files)
+            # euros1.txd -> zr3501.txd (mapped to new car target)
+            self.assertIn("zr3501.txd", installed_files)
+            # euros2.txd was excluded, should not exist
+            self.assertNotIn("zr3502.txd", installed_files)
+            self.assertNotIn("euros2.txd", installed_files)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            shutil.rmtree(game_dir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()
 
