@@ -17,7 +17,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from .parser import DualTrackParser, read_text_file_safe
 from .merger import ConfigMerger
-from .tuning_manager import TuningManager
+from .tuning_manager import TuningManager, determine_veh_mod_flags
 from .fla_manager import FLAManager
 from .id_manager import IdManager
 from .vanilla_data import VANILLA_VEHICLES, MODEL_TO_ID, TUNING_PREFIX_INFO
@@ -1352,6 +1352,9 @@ class ModInstaller:
                     self.parser.decompose_veh_mod(l) for l in pcfg["veh_mods_ide"]
                 ]
                 mod_info["parsed"]["veh_mods_ide"] = [vm for vm in mod_info["parsed"]["veh_mods_ide"] if vm]
+                for vm in mod_info["parsed"]["veh_mods_ide"]:
+                    pname = (vm.get("part_name") or "").lower()
+                    vm["flags"] = determine_veh_mod_flags(pname, base_flags=vm.get("flags"))
             if "shopping_dat" in pcfg:
                 mod_info["parsed"]["shopping"] = self.parser.decompose_shopping(pcfg["shopping_dat"])
             if "vehicle_audio" in pcfg:

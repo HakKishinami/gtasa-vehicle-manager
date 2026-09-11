@@ -7,9 +7,82 @@ and creates anti-crash fallback shopping.dat entries.
 
 import os
 import re
+import struct
 from typing import Dict, Any, List, Tuple, Optional
 from .vanilla_data import TUNING_PREFIX_INFO, VANILLA_VEHICLES, MODEL_TO_ID
 from .id_manager import IdManager
+
+
+def check_dff_has_damage_model(dff_path: str) -> bool:
+    """
+    Inspect a RenderWare .dff file to check if any atomic/frame node ends with '_dam'.
+    RenderWare node names are stored in 0x0253F2FE (rwID_NODENAME) plugin chunks.
+    """
+    if not dff_path or not os.path.isfile(dff_path):
+        return False
+    try:
+        with open(dff_path, "rb") as f:
+            data = f.read()
+        pos = 0
+        data_len = len(data)
+        while pos < data_len - 12:
+            chunk_type, chunk_size, _ = struct.unpack("<III", data[pos:pos+12])
+            if chunk_type == 0x0253F2FE:  # rwID_NODENAME
+                name_bytes = data[pos+12 : pos+12+chunk_size]
+                name = name_bytes.split(b"\x00")[0].decode("latin1", errors="replace").lower()
+                if name.endswith("_dam"):
+                    return True
+                pos += 12 + chunk_size
+            else:
+                pos += 1
+    except Exception:
+        pass
+    return False
+
+
+def is_damageable_tuning_part(part_name: str, dff_path: Optional[str] = None) -> bool:
+    """
+    Determine whether a tuning part has damaged mesh states.
+    In GTA SA, tuning parts with damaged states must have flag bit 4096 (0x1000) set in veh_mods.ide.
+    Missing flag 4096 causes CFileLoader::SetRelatedModelInfoCB to pass a NULL CDamageAtomicModelInfo
+    pointer to CDamagableModelInfo::SetDamagedAtomic, crashing at 0x004C48D6 (Access Violation writing [0x20]).
+    """
+    # 1. Inspect actual .dff binary if available
+    if dff_path and check_dff_has_damage_model(dff_path):
+        return True
+
+    # 2. GTA San Andreas part naming convention:
+    # - fbmp_*: front bumper (e.g. fbmp_a_zr, fbmp_c_zr, fbmp_a_l, fbmp_c_s)
+    # - rbmp_*: rear bumper (e.g. rbmp_a_zr, rbmp_c_zr, rbmp_a_l, rbmp_c_s)
+    #   (Vanilla exception: fbmp_lr_slv1 is the only bumper with no damage model in vanilla SA)
+    # - spl_*_b: boot/trunk spoiler (e.g. spl_a_zr_b, spl_c_zr_b, spl_a_s_b, spl_c_l_b)
+    # - bntr_* / bntl_*: bonnet vents/scoops attached to damageable bonnet
+    # - part containing '_dam'
+    p = (part_name or "").lower().strip()
+    if p == "fbmp_lr_slv1":
+        return False
+    if p.startswith("fbmp_") or p.startswith("rbmp_"):
+        return True
+    if p.startswith("spl_") and p.endswith("_b"):
+        return True
+    if p.startswith("bntr_") or p.startswith("bntl_"):
+        return True
+    if "_dam" in p:
+        return True
+
+    return False
+
+
+def determine_veh_mod_flags(part_name: str, base_flags: Optional[int] = 2097152, dff_path: Optional[str] = None) -> int:
+    """
+    Calculates correct flags for a veh_mods.ide entry.
+    Ensures bit 4096 is set if the part has damage states.
+    """
+    flags = 2097152 if base_flags is None else int(base_flags)
+    if is_damageable_tuning_part(part_name, dff_path):
+        flags |= 4096
+    return flags
+
 
 class TuningManager:
     def __init__(self, shadow_dir: str, game_path: Optional[str] = None):
@@ -397,11 +470,20 @@ class TuningManager:
             return 1193
         return max(mods.values())
 
-    def generate_missing_veh_mods_entries(self, part_names: List[str], txd_name: str, custom_ids: Optional[Dict[str, int]] = None) -> List[Dict[str, Any]]:
+    def generate_missing_veh_mods_entries(
+        self,
+        part_names: List[str],
+        txd_name: str,
+        custom_ids: Optional[Dict[str, int]] = None,
+        part_configs: Optional[Dict[str, Dict[str, Any]]] = None,
+        dff_map: Optional[Dict[str, str]] = None
+    ) -> List[Dict[str, Any]]:
         """
         Generate veh_mods.ide entries for custom parts not yet registered.
         If custom_ids is supplied (e.g. from user manual entry), respects those IDs.
         Otherwise automatically allocates safe, conflict-free IDs using IdManager.
+        Respects author IDE flags/draw_dist/txd if part_configs is provided, and
+        ensures damageable parts (fbmp_, rbmp_, spl_*_b, _dam in DFF) have bit 4096 set.
         """
         custom_ids = {k.lower(): int(v) for k, v in (custom_ids or {}).items()}
         existing = self.get_existing_veh_mods()
@@ -454,14 +536,21 @@ class TuningManager:
 
             if assigned_id is not None:
                 seen_generated.add(p_lower)
-                flags = 2097152 # vehicle color support
-                draw_dist = 100
-                line = f"{assigned_id}, {p_lower}, {txd_name.lower()}, {draw_dist}, {flags}"
+                p_cfg = (part_configs or {}).get(p_lower, {})
+                part_txd = (p_cfg.get("txd_name") or txd_name).lower()
+                part_draw = p_cfg.get("draw_dist") if p_cfg.get("draw_dist") is not None else 100
+                raw_flags = p_cfg.get("flags")
+                dff_p = (dff_map or {}).get(p_lower)
+                flags = determine_veh_mod_flags(p_lower, base_flags=raw_flags, dff_path=dff_p)
+
+                draw_str = str(int(part_draw)) if isinstance(part_draw, float) and part_draw.is_integer() else str(part_draw)
+                line = f"{assigned_id}, {p_lower}, {part_txd}, {draw_str}, {flags}"
 
                 missing_entries.append({
                     "id": assigned_id,
                     "part_name": p_lower,
-                    "txd_name": txd_name.lower(),
+                    "txd_name": part_txd,
+                    "draw_dist": part_draw,
                     "flags": flags,
                     "line": line
                 })

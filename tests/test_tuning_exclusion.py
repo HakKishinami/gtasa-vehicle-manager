@@ -151,8 +151,96 @@ class TuningParserAndExclusionTests(unittest.TestCase):
                 cm_content = f.read()
             self.assertIn("exh_a_zr", cm_content)
             self.assertNotIn("exh_c_zr", cm_content)
+            shadow_veh_mods = os.path.join(game_dir, "modloader", "Modded Cars", "veh_mods.ide")
+            self.assertTrue(os.path.exists(shadow_veh_mods))
+            with open(shadow_veh_mods, "r") as f:
+                vm_content = f.read()
+            # Verify damageable parts get bit 4096 (2101248) while non-damage parts get 2097152
+            self.assertIn("fbmp_a_zr, zr350, 100, 2101248", vm_content)
+            self.assertIn("exh_a_zr, zr350, 100, 2097152", vm_content)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_damageable_tuning_part_flag_determination(self):
+        from core.tuning_manager import determine_veh_mod_flags, is_damageable_tuning_part
+
+        # Front bumpers
+        self.assertTrue(is_damageable_tuning_part("fbmp_a_zr"))
+        self.assertEqual(determine_veh_mod_flags("fbmp_a_zr"), 2101248)
+        self.assertEqual(determine_veh_mod_flags("fbmp_c_s"), 2101248)
+        self.assertEqual(determine_veh_mod_flags("fbmp_lr_br1", base_flags=4096), 4096)
+
+        # Rear bumpers
+        self.assertTrue(is_damageable_tuning_part("rbmp_a_zr"))
+        self.assertEqual(determine_veh_mod_flags("rbmp_a_zr"), 2101248)
+        self.assertEqual(determine_veh_mod_flags("rbmp_c_l"), 2101248)
+
+        # Boot spoilers
+        self.assertTrue(is_damageable_tuning_part("spl_a_zr_b"))
+        self.assertEqual(determine_veh_mod_flags("spl_a_zr_b"), 2101248)
+        self.assertEqual(determine_veh_mod_flags("spl_c_s_b"), 2101248)
+
+        # Non-damageable parts
+        self.assertFalse(is_damageable_tuning_part("exh_a_zr"))
+        self.assertEqual(determine_veh_mod_flags("exh_a_zr"), 2097152)
+        self.assertFalse(is_damageable_tuning_part("rf_a_zr"))
+        self.assertEqual(determine_veh_mod_flags("rf_a_zr"), 2097152)
+        self.assertFalse(is_damageable_tuning_part("wg_l_a_zr"))
+        self.assertEqual(determine_veh_mod_flags("wg_l_a_zr"), 2097152)
+        self.assertFalse(is_damageable_tuning_part("spl_b_mar_m"))
+        self.assertEqual(determine_veh_mod_flags("spl_b_mar_m", base_flags=0), 0)
+
+        # Vanilla exception
+        self.assertFalse(is_damageable_tuning_part("fbmp_lr_slv1"))
+        self.assertEqual(determine_veh_mod_flags("fbmp_lr_slv1", base_flags=0), 0)
+
+    def test_dff_binary_inspection_detects_damage_node(self):
+        import struct
+        from core.tuning_manager import check_dff_has_damage_model, determine_veh_mod_flags
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            dff_path = os.path.join(temp_dir, "custom_part.dff")
+            # Create a mock RenderWare chunk with 0x0253F2FE (rwID_NODENAME) containing 'part_dam'
+            node_name = b"part_dam\x00"
+            chunk_header = struct.pack("<III", 0x0253F2FE, len(node_name), 0x1803FFFF)
+            with open(dff_path, "wb") as f:
+                f.write(b"\x00" * 32 + chunk_header + node_name + b"\x00" * 32)
+
+            self.assertTrue(check_dff_has_damage_model(dff_path))
+            # Even if part name doesn't follow standard prefix, dff binary inspection enforces 4096
+            self.assertEqual(determine_veh_mod_flags("custom_part", dff_path=dff_path), 2101248)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_merge_veh_mods_sanitizes_damage_flags(self):
+        from core.merger import ConfigMerger
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            shadow_dir = os.path.join(temp_dir, "shadow")
+            os.makedirs(shadow_dir, exist_ok=True)
+            with open(os.path.join(shadow_dir, "veh_mods.ide"), "w") as f:
+                f.write("objs\nend\n")
+
+            merger = ConfigMerger(shadow_dir, temp_dir)
+            # Mod author mistakenly specified 2097152 on bumper
+            actions = [{
+                "id": 11757,
+                "part": "fbmp_a_zr",
+                "line": "11757, fbmp_a_zr, zr350, 100, 2097152"
+            }]
+            res = merger._merge_veh_mods(actions)
+            self.assertTrue(res["success"])
+
+            with open(os.path.join(shadow_dir, "veh_mods.ide"), "r") as f:
+                content = f.read()
+            # Must be auto-corrected to 2101248 to prevent SetDamagedAtomic crash
+            self.assertIn("11757, fbmp_a_zr, zr350, 100, 2101248", content)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()
+

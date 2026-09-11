@@ -7,7 +7,7 @@ import re
 import shutil
 import time
 from typing import Dict, Any, List, Optional, Set
-from .tuning_manager import TuningManager
+from .tuning_manager import TuningManager, determine_veh_mod_flags
 from .fla_manager import FLAManager
 from .parser import DualTrackParser, normalize_ide_line
 from .vanilla_data import MODEL_TO_ID
@@ -59,6 +59,16 @@ class ConfigMerger:
         shopping_parsed = parsed_mod["parsed"].get("shopping") or {}
         author_carmods_dict = {e["part_name"].lower(): e for e in shopping_parsed.get("carmods", [])}
         author_workshops = shopping_parsed.get("workshops") or {}
+        author_veh_mods = {
+            vm["part_name"].lower(): vm
+            for vm in (parsed_mod.get("parsed", {}).get("veh_mods_ide") or [])
+            if isinstance(vm, dict) and vm.get("part_name")
+        }
+        dff_map = {
+            os.path.splitext(td.get("name", ""))[0].lower(): td.get("path")
+            for td in tuning_dffs
+            if isinstance(td, dict) and td.get("name") and td.get("path")
+        }
 
         seen_veh_mods_parts = set()
         seen_shopping_carmods = set()
@@ -166,7 +176,10 @@ class ConfigMerger:
                             "desc": f"Register symmetrical mirror parts: {l} <-> {r}"
                         })
                     _plan_shopping_for_parts(cm_model, parts)
-                    missing_mods = self.tuning_mgr.generate_missing_veh_mods_entries(parts, cm_model, custom_ids=custom_tuning_ids)
+                    missing_mods = self.tuning_mgr.generate_missing_veh_mods_entries(
+                        parts, cm_model, custom_ids=custom_tuning_ids,
+                        part_configs=author_veh_mods, dff_map=dff_map
+                    )
                     for item in missing_mods:
                         pname = item["part_name"]
                         if pname not in seen_veh_mods_parts:
@@ -200,7 +213,10 @@ class ConfigMerger:
                         "desc": f"Register symmetrical mirror parts: {l} <-> {r}"
                     })
                 _plan_shopping_for_parts(target_model, parts)
-                missing_mods = self.tuning_mgr.generate_missing_veh_mods_entries(parts, target_model, custom_ids=custom_tuning_ids)
+                missing_mods = self.tuning_mgr.generate_missing_veh_mods_entries(
+                    parts, target_model, custom_ids=custom_tuning_ids,
+                    part_configs=author_veh_mods, dff_map=dff_map
+                )
                 for item in missing_mods:
                     changes["veh_mods_ide"]["actions"].append({
                         "type": "append_veh_mod_id",
@@ -747,7 +763,16 @@ class ConfigMerger:
                         continue
                     if part_id is not None and part_id in existing_ids:
                         continue
-                    new_lines.append(a["line"] + "\n")
+                    line_str = a["line"]
+                    tokens = [p.strip() for p in line_str.split(",") if p.strip()]
+                    if len(tokens) >= 5:
+                        p_name = tokens[1].lower()
+                        cur_flags = int(tokens[4]) if tokens[4].isdigit() else 2097152
+                        corr_flags = determine_veh_mod_flags(p_name, cur_flags)
+                        if corr_flags != cur_flags:
+                            tokens[4] = str(corr_flags)
+                            line_str = ", ".join(tokens)
+                    new_lines.append(line_str + "\n")
                     if part_name:
                         existing_models.add(part_name)
                     if part_id is not None:
@@ -1286,7 +1311,7 @@ class ConfigMerger:
                         p["model_id"] = None
                         p["txd_name"] = ""
                         p["draw_dist"] = 100.0
-                        p["flags"] = 2097152
+                        p["flags"] = determine_veh_mod_flags(pname, 2097152)
                         p["ide_source"] = "none"
 
             res["carmods"] = {
@@ -1444,7 +1469,8 @@ class ConfigMerger:
         existing_info = mod_details.get(part_clean)
         txd_name = existing_info["txd_name"] if existing_info else model_clean
         draw_dist = existing_info["draw_dist"] if existing_info else 100.0
-        flags = existing_info["flags"] if existing_info else 2097152
+        raw_flags = existing_info["flags"] if existing_info else 2097152
+        flags = determine_veh_mod_flags(part_clean, base_flags=raw_flags)
         draw_str = str(int(draw_dist)) if isinstance(draw_dist, float) and draw_dist.is_integer() else str(draw_dist)
 
         for line in lines:
@@ -1466,6 +1492,8 @@ class ConfigMerger:
                     cur_txd = parts[2].lower() if len(parts) > 2 else txd_name
                     cur_draw = parts[3] if len(parts) > 3 else draw_str
                     cur_flags = parts[4] if len(parts) > 4 else str(flags)
+                    if cur_flags.isdigit():
+                        cur_flags = str(determine_veh_mod_flags(part_clean, int(cur_flags)))
                     new_lines.append(f"{new_id}, {part_clean}, {cur_txd}, {cur_draw}, {cur_flags}\n")
                     part_found = True
                     continue
