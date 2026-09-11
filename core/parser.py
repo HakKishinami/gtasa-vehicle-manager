@@ -10,12 +10,12 @@ from .vanilla_data import VANILLA_VEHICLES, MODEL_TO_ID, TUNING_PREFIX_INFO, CAR
 
 # Section header regex (Track 1) - matches standalone section headers with optional markers/decorations
 RE_SECTION_HEADER = re.compile(
-    r'(?i)^\s*[-*#=_/\[\(]*\s*(veh_mods(?:\.ide)?|objs?|vehicles?\.ide|handling(?:\.cfg)?|carcols(?:\.dat)?|carmods(?:\.dat)?|shopping(?:\.dat)?|section\s+carmods?|section\s+carmod[1-3]|(?:gtasa_)?(?:vehicle[\s_]*)?audio(?:[\s_]*settings)?(?:\.cfg)?|model_special_features(?:\.dat)?|special_features|fxt(?:\.txt)?|gxt|cleo_text|vehicle_names?|car_names?)\b(?:\s*(?:data|lines?|settings?|code|section|parts?|\(fla\)))?[:\s\-*#=_/\]\)]*$'
+    r'(?i)^\s*[-*#=_/\[\(|~]*\s*(veh_mods(?:\.ide)?|objs?|vehicles?\.ide|handling(?:\.cfg)?|carcols(?:\.dat)?|carmods(?:\.dat)?|shopping(?:\.dat)?|section\s+carmods?|section\s+carmod[1-3]|(?:gtasa_)?(?:vehicle[\s_]*)?audio(?:[\s_]*settings)?(?:\.cfg)?|model_special_features(?:\.dat)?|special_features|fxt(?:\.txt)?|gxt|cleo_text|vehicle_names?|car_names?)\b(?:\s*(?:data|lines?|settings?|code|section|parts?|\(fla\)))?[:\s\-*#=_/\]\)|~]*$'
 )
 
 # Inline section header regex - matches headers that have data directly on the same line (e.g. "#handling: PREVION ...", "[carcols] previon ...")
 RE_INLINE_HEADER = re.compile(
-    r'(?i)^\s*[-*#=_/\[\(]*\s*(veh_mods(?:\.ide)?|objs?|vehicles?\.ide|handling(?:\.cfg)?|carcols(?:\.dat)?|carmods(?:\.dat)?|shopping(?:\.dat)?|section\s+carmods?|section\s+carmod[1-3]|(?:gtasa_)?(?:vehicle[\s_]*)?audio(?:[\s_]*settings)?(?:\.cfg)?|model_special_features(?:\.dat)?|special_features|fxt(?:\.txt)?)\s*[\]\):=*#_/-]+\s*(.+)$'
+    r'(?i)^\s*[-*#=_/\[\(|~]*\s*(veh_mods(?:\.ide)?|objs?|vehicles?\.ide|handling(?:\.cfg)?|carcols(?:\.dat)?|carmods(?:\.dat)?|shopping(?:\.dat)?|section\s+carmods?|section\s+carmod[1-3]|(?:gtasa_)?(?:vehicle[\s_]*)?audio(?:[\s_]*settings)?(?:\.cfg)?|model_special_features(?:\.dat)?|special_features|fxt(?:\.txt)?)\s*[\]\):=*#_/\-|~]+\s*(.+)$'
 )
 
 RE_SHOPPING_INSTRUCTION = re.compile(
@@ -503,6 +503,7 @@ class DualTrackParser:
         """
         Robust heuristic for veh_mods.ide lines (ID, ModelName, TxdName, DrawDist, Flags).
         Matches: 11735, exh_a_zr, zr350, 100, 2097152
+                 ID, exh_a_zr, zr350, 100, 2097152
                  1000, spoiler1, generic, 100, 2097152
         """
         clean = line.strip().lstrip('\ufeff').split('#')[0].split(';')[0].split('//')[0].strip()
@@ -512,8 +513,9 @@ class DualTrackParser:
         if len(parts) != 5:
             return False
 
-        # Token 0: numeric ID
-        if not parts[0].isdigit():
+        # Token 0: numeric ID or common placeholder (ID, [ID], XXX, ???, etc.)
+        token0 = parts[0].strip().lower()
+        if not (token0.isdigit() or token0 in ("id", "[id]", "xxx", "xxxx", "???", "n/a", "-1", "none", "your_id", "your id")):
             return False
 
         # Token 1: part name
@@ -622,7 +624,15 @@ class DualTrackParser:
         if not re.match(r'^[a-z0-9_]{2,20}$', model_cand) or model_cand.isdigit():
             return False
 
+        # Exclude placeholder tokens that cannot be vehicle model names
+        if model_cand in ("id", "[id]", "item", "section", "veh_mods", "carmods", "handling", "carcols"):
+            return False
+
         part_names = parts[1:]
+        # Carmods parts are identifiers (e.g. exh_a_zr), NEVER pure digits (e.g. 100, 2097152)
+        if any(p.isdigit() for p in part_names):
+            return False
+
         # Every part in a carmods line must be a valid single identifier without spaces or punctuation
         if not all(re.match(r'^[a-z0-9_]{2,24}$', p.lower()) for p in part_names):
             return False
@@ -1002,10 +1012,11 @@ class DualTrackParser:
         """Decompose veh_mods.ide line (ID, ModelName, TxdName, DrawDist, Flags)."""
         clean = raw_line.strip().lstrip('\ufeff').split('#')[0].split(';')[0].split('//')[0].strip()
         parts = [p.strip() for p in clean.split(",") if p.strip()]
-        if len(parts) >= 5 and parts[0].isdigit() and parts[4].isdigit():
+        if len(parts) >= 5 and parts[4].isdigit():
+            part_id = int(parts[0]) if parts[0].isdigit() else None
             try:
                 return {
-                    "id": int(parts[0]),
+                    "id": part_id,
                     "part_name": parts[1].lower(),
                     "txd_name": parts[2].lower(),
                     "draw_dist": float(parts[3]),
@@ -1191,7 +1202,8 @@ class DualTrackParser:
         for vm in veh_mods_decomp:
             pname = vm["part_name"].lower()
             author_tuning_ides[pname] = vm
-            custom_tuning_ids[pname] = vm["id"]
+            if vm.get("id") is not None:
+                custom_tuning_ids[pname] = vm["id"]
         
         # FXT display names: on-disk .fxt files are authoritative (they are
         # what the game loads), readme-scraped lines only fill gaps. This

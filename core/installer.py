@@ -635,6 +635,13 @@ class ModInstaller:
                     except Exception:
                         pass
 
+        for vm_line in parsed_config.get("veh_mods_ide", []):
+            vm = self.parser.decompose_veh_mod(vm_line)
+            if vm and vm.get("part_name"):
+                m_name = vm["part_name"].lower()
+                if vm.get("id") is not None and m_name not in author_ide_mods:
+                    author_ide_mods[m_name] = vm["id"]
+
         # Load known registered veh_mods.ide parts (vanilla + existing shadow)
         try:
             known_veh_mods = self.merger.tuning_mgr.get_all_veh_mods_details() or {}
@@ -652,6 +659,12 @@ class ModInstaller:
         for m_name in author_ide_mods:
             if m_name not in all_part_names:
                 all_part_names.append(m_name)
+        for vm_line in parsed_config.get("veh_mods_ide", []):
+            vm = self.parser.decompose_veh_mod(vm_line)
+            if vm and vm.get("part_name"):
+                m_name = vm["part_name"].lower()
+                if m_name not in known_veh_mods and m_name not in all_part_names:
+                    all_part_names.append(m_name)
         for _cm_parts in _carmods_parts_by_model.values():
             for p_lower in _cm_parts:
                 if p_lower not in known_veh_mods and p_lower not in all_part_names:
@@ -1055,6 +1068,10 @@ class ModInstaller:
             except Exception:
                 pass
 
+        excluded_tuning_parts = set(
+            str(p).strip().lower() for p in (params.get("excluded_tuning_parts") or []) if str(p).strip()
+        )
+
         for root, _, files in os.walk(inspect_dir):
             for fname in files:
                 src_file = os.path.join(root, fname)
@@ -1072,6 +1089,8 @@ class ModInstaller:
                     if base.startswith(KNOWN_TUNING_PREFIXES) or "tuning" in root.lower():
                         # Dedicated tuning part: preserve original filename
                         dest_name = fname
+                        if base in excluded_tuning_parts:
+                            should_copy = False
                     else:
                         # Primary vehicle model / texture
                         matched_v = None
@@ -1330,7 +1349,7 @@ class ModInstaller:
                 mod_info["parsed"]["carmods"] = [cm for cm in mod_info["parsed"]["carmods"] if cm]
             if "veh_mods_ide" in pcfg:
                 mod_info["parsed"]["veh_mods_ide"] = [
-                    self.parser.decompose_ide(l) for l in pcfg["veh_mods_ide"]
+                    self.parser.decompose_veh_mod(l) for l in pcfg["veh_mods_ide"]
                 ]
                 mod_info["parsed"]["veh_mods_ide"] = [vm for vm in mod_info["parsed"]["veh_mods_ide"] if vm]
             if "shopping_dat" in pcfg:
@@ -1484,14 +1503,48 @@ class ModInstaller:
 
                 if matched_cm:
                     cm_copy = dict(matched_cm)
-                    tokens = [t.strip() for t in cm_copy.get("raw", "").split(",")]
+                    tokens = [t.strip() for t in cm_copy.get("raw", "").split(",") if t.strip()]
                     if tokens:
                         tokens[0] = t_model.lower()
+                        if excluded_tuning_parts:
+                            tokens = [tokens[0]] + [tok for tok in tokens[1:] if tok.lower() not in excluded_tuning_parts]
                         cm_copy["raw"] = ", ".join(tokens)
                         cm_copy["model"] = t_model.lower()
                         cm_copy["model_name"] = t_model.lower()
+                        if "part_names" in cm_copy:
+                            cm_copy["part_names"] = [p for p in cm_copy["part_names"] if p.lower() not in excluded_tuning_parts]
+                        if "parts" in cm_copy:
+                            cm_copy["parts"] = [p for p in cm_copy["parts"] if p.get("part_name", "").lower() not in excluded_tuning_parts]
                     final_carmods.append(cm_copy)
             mod_info["parsed"]["carmods"] = final_carmods
+
+            # Filter excluded tuning parts from other parsed configurations
+            if excluded_tuning_parts:
+                if "veh_mods_ide" in mod_info.get("parsed", {}):
+                    mod_info["parsed"]["veh_mods_ide"] = [
+                        vm for vm in (mod_info["parsed"].get("veh_mods_ide") or [])
+                        if vm and (vm.get("part_name") or "").lower() not in excluded_tuning_parts
+                    ]
+                if "shopping" in mod_info.get("parsed", {}):
+                    sh = mod_info["parsed"]["shopping"]
+                    if isinstance(sh, dict):
+                        if "carmods" in sh:
+                            sh["carmods"] = [
+                                e for e in sh["carmods"]
+                                if (e.get("part_name") or "").lower() not in excluded_tuning_parts
+                            ]
+                        if "workshops" in sh:
+                            sh["workshops"] = {
+                                w_k: [p for p in p_list if p.lower() not in excluded_tuning_parts]
+                                for w_k, p_list in sh["workshops"].items()
+                            }
+                if "files" in mod_info and isinstance(mod_info["files"], dict):
+                    for fk in ("tuning_dffs", "tuning_txds"):
+                        if fk in mod_info["files"]:
+                            mod_info["files"][fk] = [
+                                f for f in mod_info["files"][fk]
+                                if os.path.splitext(f.get("name", ""))[0].lower() not in excluded_tuning_parts
+                            ]
 
             # Only merge selected vehicles' FLA rows, honoring each checkbox
             # and remapping the model name when installing onto another slot.
@@ -1632,10 +1685,15 @@ class ModInstaller:
                 existing_mods = {}
             combined_custom_ids = {
                 k.lower(): v for k, v in combined_custom_ids.items()
-                if k.lower() not in existing_mods
+                if k.lower() not in existing_mods and k.lower() not in excluded_tuning_parts
             }
             if combined_custom_ids:
                 mod_info["custom_tuning_ids"] = combined_custom_ids
+            elif "custom_tuning_ids" in mod_info and excluded_tuning_parts:
+                mod_info["custom_tuning_ids"] = {
+                    k.lower(): v for k, v in mod_info["custom_tuning_ids"].items()
+                    if k.lower() not in excluded_tuning_parts
+                }
 
             merge_res = self.merger.apply_merge(mod_info)
             if merge_res.get("success"):

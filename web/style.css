@@ -3852,3 +3852,24 @@ pre {
 @container (max-width: 340px) {
   .inspector-layout .handling-stat-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Tuning Part Exclusion & Fallback Checkbox Styling */
+.tuning-id-table tr.tuning-part-excluded {
+  opacity: 0.42;
+  filter: grayscale(0.5);
+  background: rgba(0, 0, 0, 0.15);
+}
+.tuning-id-table tr.tuning-part-excluded .tuning-part-name-cell {
+  text-decoration: line-through;
+  color: var(--text-muted) !important;
+}
+.tuning-id-table tr.tuning-part-excluded .input-id-edit {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+.id-badge.id-badge-excluded {
+  background: #27272a;
+  color: #a1a1aa;
+  border-color: #3f3f46;
+}

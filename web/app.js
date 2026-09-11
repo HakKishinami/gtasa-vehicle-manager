@@ -4491,6 +4491,7 @@ function setupInstaller() {
         merge_fla: document.getElementById("chkMergeFla").checked,
         variant_choices: collectVariantChoices(),
         excluded_files: Array.from(window.InstallAssets && window.InstallAssets.getExcludedFiles ? window.InstallAssets.getExcludedFiles() : []),
+        excluded_tuning_parts: collectExcludedTuningParts(),
         tuning_id_assignments: (() => {
           const assignments = {};
           document.querySelectorAll("#installTuningTableBody .input-id-edit").forEach(inp => {
@@ -6271,12 +6272,26 @@ function renderInstallResult(data) {
 
 // ---------------- Tuning Parts Table & Live ID Check ----------------
 
+function collectExcludedTuningParts() {
+  const tbody = document.getElementById("installTuningTableBody");
+  if (!tbody) return [];
+  const excluded = [];
+  tbody.querySelectorAll(".chk-tuning-part").forEach(chk => {
+    if (!chk.checked && chk.dataset.part) {
+      excluded.push(chk.dataset.part.toLowerCase());
+    }
+  });
+  return excluded;
+}
+
 function renderTuningPartsTable(parts) {
   const tbody = document.getElementById("installTuningTableBody");
   if (!tbody) return;
   tbody.innerHTML = "";
   parts.forEach(p => {
     const tr = document.createElement("tr");
+    tr.dataset.part = p.part_name;
+    tr.dataset.status = p.status;
 
     let statusBadge = "";
     if (p.is_conflict) {
@@ -6289,11 +6304,15 @@ function renderTuningPartsTable(parts) {
     } else {
       statusBadge = `<span class="id-badge id-badge-free">${window.t("install.statusFree", "🟢 Free & Safe")}</span>`;
     }
+    tr.dataset.statusBadge = statusBadge;
 
     const catDisplay = p.name_en || (p.name_cn ? (p.name_cn.match(/\(([^)]+)\)/)?.[1] || p.name_cn) : (p.category || "Tuning"));
 
     tr.innerHTML = `
-      <td style="font-family:var(--font-mono); font-weight:600; color:var(--text-bright);">
+      <td style="text-align:center; padding:6px 8px;">
+        <input type="checkbox" class="chk-tuning-part" data-part="${p.part_name}" checked title="${window.t("install.chkPartTooltip", "Include this tuning part in installation")}">
+      </td>
+      <td class="tuning-part-name-cell" style="font-family:var(--font-mono); font-weight:600; color:var(--text-bright);">
         🛠️ ${p.part_name}
       </td>
       <td>
@@ -6307,7 +6326,85 @@ function renderTuningPartsTable(parts) {
       </td>
     `;
     tbody.appendChild(tr);
+
+    // Checkbox toggle logic
+    const chk = tr.querySelector(".chk-tuning-part");
+    const input = tr.querySelector(".input-id-edit");
+    const statusCell = tr.querySelector(".tuning-status-cell");
+    chk.addEventListener("change", () => {
+      if (chk.checked) {
+        tr.classList.remove("tuning-part-excluded");
+        if (p.status !== "registered") {
+          input.disabled = false;
+        }
+        statusCell.innerHTML = statusBadge;
+      } else {
+        tr.classList.add("tuning-part-excluded");
+        input.disabled = true;
+        statusCell.innerHTML = `<span class="id-badge id-badge-excluded">${window.t("install.statusExcluded", "Skipped")}</span>`;
+      }
+      updateTuningSelectionSummary();
+    });
   });
+
+  const updateTuningSelectionSummary = () => {
+    const allChecks = Array.from(tbody.querySelectorAll(".chk-tuning-part"));
+    const checkedCount = allChecks.filter(c => c.checked).length;
+    const totalCount = allChecks.length;
+    const masterChk = document.getElementById("chkAllTuningParts");
+    if (masterChk) {
+      masterChk.checked = checkedCount === totalCount;
+      masterChk.indeterminate = checkedCount > 0 && checkedCount < totalCount;
+    }
+    const badge = document.getElementById("installTuningBadge");
+    if (badge) {
+      badge.textContent = window.t("install.partsCountRatio", "{0} / {1} parts").replace("{0}", checkedCount).replace("{1}", totalCount);
+    }
+    const summaryEl = document.getElementById("tuningTableSummaryText");
+    if (summaryEl) {
+      if (checkedCount === 0) {
+        summaryEl.textContent = window.t("install.tuningAllExcluded", "All tuning parts excluded from installation");
+        summaryEl.style.color = "var(--text-muted)";
+      } else if (checkedCount < totalCount) {
+        summaryEl.textContent = window.t("install.tuningSomeExcluded", "{0} part(s) excluded from installation").replace("{0}", totalCount - checkedCount);
+        summaryEl.style.color = "var(--accent-amber, #f59e0b)";
+      } else {
+        summaryEl.textContent = window.t("install.tuningSafeText", "All tuning parts verified conflict-free");
+        summaryEl.style.color = "var(--accent-emerald)";
+      }
+    }
+  };
+
+  // Master checkbox toggle
+  const masterChk = document.getElementById("chkAllTuningParts");
+  if (masterChk) {
+    masterChk.checked = true;
+    masterChk.indeterminate = false;
+    masterChk.onchange = () => {
+      const isChecked = masterChk.checked;
+      tbody.querySelectorAll("tr").forEach(tr => {
+        const chk = tr.querySelector(".chk-tuning-part");
+        const input = tr.querySelector(".input-id-edit");
+        const statusCell = tr.querySelector(".tuning-status-cell");
+        if (chk) chk.checked = isChecked;
+        if (isChecked) {
+          tr.classList.remove("tuning-part-excluded");
+          if (tr.dataset.status !== "registered") {
+            input.disabled = false;
+          }
+          statusCell.innerHTML = tr.dataset.statusBadge || "";
+        } else {
+          tr.classList.add("tuning-part-excluded");
+          input.disabled = true;
+          statusCell.innerHTML = `<span class="id-badge id-badge-excluded">${window.t("install.statusExcluded", "Skipped")}</span>`;
+        }
+      });
+      updateTuningSelectionSummary();
+    };
+  }
+
+  // Initial update
+  updateTuningSelectionSummary();
 
   // Attach live debounced validation
   let debounceTimer = null;
@@ -6324,19 +6421,19 @@ function renderTuningPartsTable(parts) {
   const btnAutoReassign = document.getElementById("btnAutoReassignIds");
   if (btnAutoReassign) {
     btnAutoReassign.onclick = async () => {
-      const inputs = tbody.querySelectorAll(".input-id-edit");
-      if (inputs.length === 0) return;
+      const activeInputs = Array.from(tbody.querySelectorAll(".input-id-edit")).filter(inp => !inp.disabled && inp.dataset.registered !== "true");
+      if (activeInputs.length === 0) return;
       btnAutoReassign.disabled = true;
       btnAutoReassign.textContent = window.t("install.autoAssigning", "⚡ Assigning IDs...");
       try {
         const res = await fetch("/api/ids/allocate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ count: inputs.length })
+          body: JSON.stringify({ count: activeInputs.length })
         });
         const data = await res.json();
         if (data.success && data.allocated) {
-          inputs.forEach((inp, idx) => {
+          activeInputs.forEach((inp, idx) => {
             if (idx < data.allocated.length) {
               inp.value = data.allocated[idx];
               inp.classList.remove("has-conflict");
