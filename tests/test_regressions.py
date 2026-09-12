@@ -2136,6 +2136,150 @@ class ReplaceToAddonConversionRegression(unittest.TestCase):
         self.assertEqual(len(dec["handling_id"]), 14)
 
 
+class AddonToReplaceConversionRegression(unittest.TestCase):
+    """Reverse conversion: an addon package (recurs) installed as a
+    replacement of a vanilla vehicle (alpha)."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="addon2replace_")
+        self.addCleanup(self.temp.cleanup)
+        self.game = Path(self.temp.name) / "game"
+        (self.game / "data").mkdir(parents=True)
+        (self.game / "gta_sa.exe").write_bytes(b"x")
+        (self.game / "data" / "vehicles.ide").write_text(
+            "cars\n"
+            "602, alpha, alpha, car, ALPHA, ALPHA, null, executive, 7, 0, 0, -1, 0.75, 0.75, 0\n"
+            "468, sanchez, sanchez, bike, SANCHEZ, SANCHEZ, null, ignore, 10, 0, 0, -1, 0.7, 0.7, 0\n"
+            "end\n",
+            encoding="utf-8")
+        (self.game / "data" / "handling.cfg").write_text("; h\n" + handling("ALPHA") + "\n", encoding="utf-8")
+        (self.game / "data" / "carcols.dat").write_text("col\nend\ncar\nalpha, 1, 1\nend\n", encoding="utf-8")
+        (self.game / "data" / "carmods.dat").write_text("mods\nalpha, nto_b_s\nend\nlink\nend\n", encoding="utf-8")
+        (self.game / "data" / "shopping.dat").write_text("section prices\nsection CarMods\nend\nend\n", encoding="utf-8")
+        self.shadow = self.game / "modloader" / "Modded Cars"
+        self.source = Path(self.temp.name) / "src"
+        self.source.mkdir()
+        (self.source / "recurs.dff").write_bytes(b"dff")
+        (self.source / "recurs.txd").write_bytes(b"txd")
+        custom_handling = handling("RECURS").replace("1500.0", "9999.0", 1)
+        # Mirrors the real-world addon package layout: placeholder ID column,
+        # the author's own model name in every section.
+        (self.source / "readme.txt").write_text(
+            "vehicles.ide\n"
+            "ID, \trecurs,     recurs,     car,        RECURS,     RECURS,     null, executive,  7, \t0,\t1f10,   -1, 0.79, 0.79, \t0\n\n"
+            "handling.cfg\n" + custom_handling + "\n\n"
+            "carcols.dat\nrecurs, 42, 42\n\n"
+            "carmods.dat\nrecurs, nto_b_l, nto_b_s\n",
+            encoding="utf-8")
+        self.backup = BackupManager(backup_dir=str(Path(self.temp.name) / "backups"), game_dir=str(self.game))
+        self.installer = ModInstaller(str(self.game), "Modded Cars", backup_manager=self.backup)
+
+    def payload(self, **over):
+        veh = {
+            "source_model": "recurs", "target_model": "alpha", "source_type": "car",
+            "category": "Modded Cars",
+            "fxt_key": "RECURS", "fxt_name": "Recursion",
+            "generate_fxt": True, "merge_fla": False,
+        }
+        folder = over.pop("folder_name", "RecursionGT")
+        veh.update(over)
+        return {"inspect_dir": str(self.source), "target_category": "Modded Cars",
+                "folder_name": folder, "vehicles": [veh]}
+
+    def test_addon_package_installed_as_replacement_rekeys_everything(self):
+        res = self.installer.execute_install(self.payload())
+        self.assertTrue(res["success"], res)
+
+        dest = self.game / "modloader" / "Modded Cars" / "RecursionGT"
+        self.assertTrue((dest / "alpha.dff").is_file())
+        self.assertTrue((dest / "alpha.txd").is_file())
+        self.assertFalse((dest / "recurs.dff").exists())
+        self.assertFalse((dest / "recurs.txd").exists())
+
+        # Handling: the author's RECURS physics re-keyed onto ALPHA's slot.
+        hand = (self.shadow / "handling.cfg").read_text(encoding="utf-8-sig")
+        alpha_line = next(l for l in hand.splitlines() if l.strip().upper().startswith("ALPHA"))
+        self.assertIn("9999.0", alpha_line)
+        self.assertNotIn("RECURS", hand.upper())
+        self.assertNotIn("9999.0", (self.game / "data" / "handling.cfg").read_text(encoding="utf-8-sig"))
+
+        # Carcols + carmods follow the target model name, not the author's.
+        carcols = (self.shadow / "carcols.dat").read_text(encoding="utf-8-sig")
+        self.assertIn("alpha, 42, 42", carcols)
+        self.assertNotIn("recurs", carcols.lower())
+        carmods = (self.shadow / "carmods.dat").read_text(encoding="utf-8-sig")
+        self.assertIn("alpha,", carmods.lower())
+        self.assertIn("nto_b_l", carmods.lower())
+        self.assertNotIn("recurs", carmods.lower())
+
+        # Replacement installs never ADD a vehicles.ide line: alpha's vanilla
+        # definition is kept (ID/model/txd/handling untouched); only its GXT
+        # game-name column may be re-pointed by the payload's fxt_key.
+        ide = (self.shadow / "vehicles.ide").read_text(encoding="utf-8-sig")
+        alpha_lines = [l for l in ide.splitlines() if l.strip().lower().startswith("602,")]
+        self.assertEqual(len(alpha_lines), 1)
+        dec = DualTrackParser().decompose_ide(alpha_lines[0])
+        self.assertEqual(dec["id"], 602)
+        self.assertEqual(dec["model_name"], "alpha")
+        self.assertEqual(dec["txd_name"], "alpha")
+        self.assertEqual(dec["handling_id"], "ALPHA")
+        self.assertEqual(str(dec["game_name"]).upper(), "RECURS")
+        for line in ide.splitlines():
+            tokens = [t.strip() for t in line.split(",")]
+            if len(tokens) >= 3 and tokens[1]:
+                self.assertNotEqual(tokens[1].lower(), "recurs")
+
+    def test_addon_to_replace_rejects_cross_class_target(self):
+        res = self.installer.execute_install(self.payload(target_model="pcj600"))
+        self.assertFalse(res["success"])
+        self.assertIn("class", res.get("error", "").lower())
+        # Nothing was deployed for the rejected install.
+        self.assertFalse((self.game / "modloader" / "Modded Cars" / "RecursionGT" / "pcj600.dff").exists())
+
+    def test_addon_to_replace_with_target_gxt_key_keeps_vanilla_identity(self):
+        # Default conversion naming: the target's vanilla GXT key paired with
+        # the package's display name ("ALPHA Recursion"). The vanilla IDE line
+        # is untouched (no shadow override is even generated) and the deployed
+        # fxt re-points the vanilla key at the mod's name.
+        res = self.installer.execute_install(self.payload(fxt_key="ALPHA", fxt_name="Recursion"))
+        self.assertTrue(res["success"], res)
+        shadow_ide = self.shadow / "vehicles.ide"
+        if shadow_ide.exists():
+            for line in shadow_ide.read_text(encoding="utf-8-sig").splitlines():
+                tokens = [t.strip() for t in line.split(",")]
+                if len(tokens) >= 3 and tokens[1]:
+                    self.assertNotEqual(tokens[1].lower(), "recurs")
+        game_ide = (self.game / "data" / "vehicles.ide").read_text(encoding="utf-8-sig")
+        self.assertIn("ALPHA, ALPHA", game_ide)
+        self.assertNotIn("RECURS", game_ide.upper())
+        dest = self.game / "modloader" / "Modded Cars" / "RecursionGT"
+        fxt_files = list(dest.glob("*.fxt"))
+        self.assertTrue(fxt_files)
+        text = "".join(f.read_text(encoding="utf-8-sig") for f in fxt_files)
+        entry_keys = [line.split()[0].upper() for line in text.splitlines() if line.split()]
+        self.assertIn("ALPHA", entry_keys)
+        self.assertNotIn("RECURS", entry_keys)
+        self.assertIn("ALPHA Recursion", text)
+
+    def test_addon_to_replace_same_class_family_allows_bike(self):
+        # A bike package (source_type bike) onto a vanilla bike is legitimate.
+        (self.source / "recurs.dff").unlink()
+        (self.source / "scooter.dff").write_bytes(b"dff")
+        (self.source / "scooter.txd").write_bytes(b"txd")
+        readme = (self.source / "readme.txt").read_text(encoding="utf-8")
+        readme = readme.replace("recurs", "scooter").replace("RECURS", "SCOOTER")
+        (self.source / "readme.txt").write_text(readme, encoding="utf-8")
+        res = self.installer.execute_install(self.payload(
+            source_model="scooter", target_model="sanchez", source_type="bike",
+            folder_name="ScooterGT"))
+        self.assertTrue(res["success"], res)
+        dest = self.game / "modloader" / "Modded Cars" / "ScooterGT"
+        self.assertTrue((dest / "sanchez.dff").is_file())
+        hand = (self.shadow / "handling.cfg").read_text(encoding="utf-8-sig")
+        sanchez_line = next(l for l in hand.splitlines() if l.strip().upper().startswith("SANCHEZ"))
+        self.assertIn("9999.0", sanchez_line)
+
+
 class VanillaIdeTypoRegression(unittest.TestCase):
     WAYFARER_LINE = ("586,\twayfarer\twayfarer,\tbike,\t\tWAYFARER,\tWAYFARE,\twayfarer,motorbike,"
                      "\t6,\t0,\t0,\t\t23, 0.654, 0.654,\t-1")

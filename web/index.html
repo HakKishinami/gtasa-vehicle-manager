@@ -694,9 +694,18 @@
                         <button type="button" class="install-mode-btn active" data-mode="replace" data-i18n="install.modeReplace">🔁 Replace</button>
                         <button type="button" class="install-mode-btn" data-mode="addon" data-i18n="install.modeAddon">➕ Add New</button>
                       </div>
+                      <div class="vehicle-picker-bar" id="installVehiclePickerBar">
+                        <input type="text" id="installVehicleSearch" class="form-control vehicle-picker-search" autocomplete="off" spellcheck="false" data-i18n-placeholder="install.vehicleSearchPlaceholder" placeholder="Search vehicles...">
+                        <select id="installVehicleTypeFilter" class="vehicle-picker-type" data-i18n-title="install.vehicleTypeFilterTitle" title="Filter by vehicle class">
+                          <!-- Populated by JS from the vanilla vehicle classes -->
+                        </select>
+                      </div>
                       <select id="installVehicleSelect">
                         <!-- Populated dynamically with 212 vanilla vehicles -->
                       </select>
+                      <div id="installVehiclePickerEmpty" class="field-hint vehicle-picker-empty" style="display:none;" data-i18n="install.vehiclePickerEmpty">No vehicles match the current search or class filter.</div>
+                      <div id="installAddonReplaceHint" class="field-hint install-convert-hint" style="display:none;"></div>
+                      <div id="installClassMismatchError" class="field-hint install-class-error" style="display:none;"></div>
                       <div id="installAddonNameFields" style="display:none; margin-top:10px;">
                         <label for="installNewModelName" class="form-label" data-i18n="install.newModelLabel">New model name (DFF file name)</label>
                         <input type="text" id="installNewModelName" class="form-control" maxlength="20" spellcheck="false" autocomplete="off" placeholder="e.g. previon2" data-i18n-placeholder="install.newModelPlaceholder">
@@ -958,6 +967,23 @@
         <div class="modal-footer">
           <button class="btn btn-secondary" id="cancelPathModal" data-i18n="modal.btnCancel">Cancel</button>
           <button class="btn btn-primary" id="saveGamePathBtn" data-i18n="path.btnSave">Confirm & Launch</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Generic App Confirm Modal (themed window.confirm replacement) -->
+    <div class="modal" id="appConfirmModal">
+      <div class="modal-content" style="max-width: 460px;">
+        <div class="modal-header">
+          <h3 style="font-size:15px; margin:0;" data-i18n="confirm.appTitle">GTASA Vehicle MOD Manager</h3>
+          <button class="close-btn" id="appConfirmClose">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p id="appConfirmMessage" style="margin:0; font-size:13px; line-height:1.7; color:var(--text-bright); white-space:pre-line;">--</p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="appConfirmCancel" data-i18n="modal.btnCancel">Cancel</button>
+          <button class="btn btn-primary" id="appConfirmOk" data-i18n="confirm.btnContinue">Continue</button>
         </div>
       </div>
     </div>

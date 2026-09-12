@@ -2699,7 +2699,7 @@ async function confirmDeleteTuningPart(partName) {
 
   const confirmMsg = window.t("inspect.deletePartConfirm", "Are you sure you want to completely delete part [{0}] from this vehicle?\n\nThis will remove it from carmods.dat, veh_mods.ide, and unlink mirror parts.").replace("{0}", partName);
 
-  if (!window.confirm(confirmMsg)) return;
+  if (!(await showAppConfirm(confirmMsg))) return;
 
   try {
     const res = await fetch("/api/vehicle/delete-tuning-part", {
@@ -4296,9 +4296,16 @@ function setupInstaller() {
         renameHint.style.display = "none";
       }
 
-      if (fxtKey && (!fxtKey.value || (currentInspectData && fxtKey.value === currentInspectData.target_model.toUpperCase()))) {
-        if (!(wizardVehicles && wizardVehicles.length > 1)) {
-          fxtKey.value = selModel.toUpperCase();
+      // GXT naming on target change: vanilla replace-rename flows follow the
+      // target model; a converted addon package defaults to the TARGET's
+      // vanilla identity (key + name) unless the user typed a custom key.
+      if (fxtKey && !(wizardVehicles && wizardVehicles.length > 1)) {
+        if (!isAddonModel(baseRef)) {
+          if (!fxtKey.value || (currentInspectData && fxtKey.value === currentInspectData.target_model.toUpperCase())) {
+            fxtKey.value = selModel.toUpperCase();
+          }
+        } else if (currentInstallMode() === "replace") {
+          applyConversionNameDefaults(selModel);
         }
       }
 
@@ -4315,6 +4322,7 @@ function setupInstaller() {
       syncDefaultCategoryToTarget(selModel);
       refreshAddonIdRow();
       refreshAddonIdSummary();
+      refreshInstallReplaceHint();
     });
   }
 
@@ -4472,12 +4480,29 @@ function setupInstaller() {
       const targetModel = effectiveInstallTarget();
       const targetTxd = effectiveInstallTxd();
 
+      // Reverse conversion guard: an addon package may only replace a vanilla
+      // vehicle of the same handling class (car vs bike vs ...). The backend
+      // enforces this too; catching it here gives an instant, clear error.
+      refreshInstallReplaceHint();
+      const classMismatch = anyInstallClassMismatch();
+      if (classMismatch) {
+        showToast(window.t(
+          "install.classMismatchError",
+          "⚠️ Class mismatch: this package is a {0}, but {1} is a {2}. Physics and animation schemas differ between classes — pick a vanilla {0} target instead."
+        ).split("{0}").join(classMismatch.srcType)
+         .split("{1}").join(classMismatch.target.name)
+         .split("{2}").join(classMismatch.tgtType), "error");
+        return;
+      }
+
       const payload = {
         inspect_dir: currentInspectData.inspect_dir,
         target_category: targetCategory,
         author_folder: document.getElementById("installAuthorFolder") ? document.getElementById("installAuthorFolder").value.trim() : "",
         folder_name: subfolder,
         target_model: targetModel,
+        source_model: installTargetSourceModel() || targetModel,
+        source_type: installSourceType(),
         target_txd: targetTxd,
         target_handling: effectiveInstallHandling(),
         copy_files: document.getElementById("chkCopyFiles").checked,
@@ -4575,8 +4600,8 @@ function setupInstaller() {
       if (killCap != null) {
         const over = Object.entries(payload.addon_id_assignments).filter(([, aid]) => aid >= killCap);
         if (over.length > 0) {
-          const msg = window.t("install.addonIdOverKillableConfirm", "These addon vehicle IDs exceed the FLA killable limit {0}; destroyed vehicles may not register kills or crash the game (raise Count of killable model IDs in the ini and retry):\n{1}\nInstall anyway?").replace("{0}", killCap).replace("{1}", over.map(([am, aid]) => `${am.toUpperCase()} → ${aid}`).join("、"));
-          if (!window.confirm(msg)) return;
+          const msg = window.t("install.addonIdOverKillableConfirm", "These addon vehicle IDs exceed the FLA killable limit {0}; destroyed vehicles may not register kills or crash the game (raise Count of killable model IDs in the ini and retry):\n{1}\nInstall anyway?").replace("{0}", killCap).replace("{1}", over.map(([am, aid]) => `${am.toUpperCase()} → ${aid}`).join(", "));
+          if (!(await showAppConfirm(msg))) return;
         }
       }
 
@@ -4818,7 +4843,11 @@ let displayedDestPhase = null;
 
 function phaseOfVehicle(wv) {
   if (!wv) return "replace";
-  return isAddonModel(wv.source_model) ? "addon" : "replace";
+  // The user's mode choice wins over the package kind: an addon package can
+  // be installed as a replacement (files re-keyed onto a vanilla target), and
+  // that vehicle belongs in the replace phase/destination.
+  const mode = wv.install_mode || (isAddonModel(wv.source_model) ? "addon" : "replace");
+  return mode === "addon" ? "addon" : "replace";
 }
 
 function phaseVehicleIndices(phase) {
@@ -4921,6 +4950,120 @@ function effectiveInstallHandling() {
   return inp ? inp.value.trim() : "";
 }
 
+// ---------------- Addon package -> replacement install (reverse conversion) ----------------
+
+// Classes sharing a handling.cfg schema. Re-keying physics between families
+// corrupts the target (car lines and bike lines have different columns).
+const VEHICLE_CLASS_FAMILY = { car: "car", mtruck: "car", bike: "bike", bmx: "bike", quad: "bike" };
+
+function installSourceType() {
+  if (wizardVehicles && wizardVehicles.length > 1 && wizardVehicles[wizardCurrentIndex]) {
+    return String(wizardVehicles[wizardCurrentIndex].source_type || "").toLowerCase();
+  }
+  const src = installTargetSourceModel();
+  if (!src) return "";
+  const tvs = (currentInspectData && currentInspectData.target_vehicles) || [];
+  const tv = tvs.find(t => String(t.target_model || t.model || "").toLowerCase() === src);
+  return tv ? String(tv.type || "car").toLowerCase() : "";
+}
+
+// Core class check for one vehicle slot: returns mismatch info when an addon
+// package would be re-keyed onto a vanilla target of another class (an install
+// that would corrupt handling data).
+function vehicleClassMismatch(mode, src, srcType, tgt) {
+  if (mode !== "replace") return null;
+  if (!src || !isAddonModel(src) || !srcType || !tgt) return null;
+  const match = vanillaVehicles.find(v => v.model.toLowerCase() === tgt);
+  if (!match) return null;
+  const tgtType = String(match.type || "car").toLowerCase();
+  if (VEHICLE_CLASS_FAMILY[srcType] === VEHICLE_CLASS_FAMILY[tgtType]) return null;
+  return { srcType, tgtType, target: match };
+}
+
+// Returns info when the current replace target's vanilla class differs from
+// the addon package's class.
+function installClassMismatch() {
+  return vehicleClassMismatch(
+    currentInstallMode(),
+    installTargetSourceModel(),
+    installSourceType(),
+    effectiveInstallTarget());
+}
+
+// Install-time guard: checks every active vehicle in wizard mode, or the
+// single target otherwise.
+function anyInstallClassMismatch() {
+  if (wizardVehicles && wizardVehicles.length > 1) {
+    for (const wv of wizardVehicles) {
+      if (!wv || wv.skip) continue;
+      const m = vehicleClassMismatch(
+        wv.install_mode || "replace",
+        String(wv.source_model || "").toLowerCase(),
+        String(wv.source_type || "").toLowerCase(),
+        String(wv.target_model || "").toLowerCase());
+      if (m) return m;
+    }
+    return null;
+  }
+  return installClassMismatch();
+}
+
+// Surfaces the reverse-conversion hint and the class-mismatch error for the
+// currently selected target. Called whenever the mode, target or inspection
+// data changes.
+// Default the GXT key of a converted addon package to the TARGET vanilla
+// vehicle's key, so the replacement never overrides the vanilla vehicles.ide
+// identity. The in-game name keeps the package's proposal (e.g. "ALPHA
+// Recursion"), so the modded car stays identifiable in-game. A key the user
+// typed manually is respected: only empty values or values this helper set
+// earlier are overwritten.
+function applyConversionNameDefaults(targetModel) {
+  const fxtKey = document.getElementById("installFxtKey");
+  const match = vanillaVehicles.find(v => v.model.toLowerCase() === (targetModel || "").toLowerCase());
+  if (!match || !fxtKey) return;
+  const cur = fxtKey.value.trim().toUpperCase();
+  if (cur && cur !== String(fxtKey.dataset.autoKey || "").toUpperCase()) return;
+  fxtKey.value = match.model.toUpperCase();
+  fxtKey.dataset.autoKey = fxtKey.value;
+}
+
+function refreshInstallReplaceHint() {
+  const hintEl = document.getElementById("installAddonReplaceHint");
+  const errEl = document.getElementById("installClassMismatchError");
+  const mode = currentInstallMode();
+  const src = installTargetSourceModel();
+  const converting = mode === "replace" && src && isAddonModel(src);
+  if (hintEl) {
+    if (converting) {
+      const tgt = effectiveInstallTarget();
+      const match = vanillaVehicles.find(v => v.model.toLowerCase() === tgt);
+      const tgtName = match ? `${match.name} (${match.model.toUpperCase()})` : "";
+      hintEl.textContent = window.t(
+        "install.addonReplaceHint",
+        "📦 Addon package installed as a replacement: DFF/TXD are renamed to {1}, and this package's handling, colors, tuning parts and FLA audio replace {0}'s vanilla data. The target's vehicles.ide entry (wheel size etc.) stays vanilla; the GXT key below names the target in-game."
+      ).replace("{0}", tgtName).replace("{1}", tgt ? tgt.toUpperCase() : "--");
+      hintEl.style.display = "block";
+    } else {
+      hintEl.style.display = "none";
+    }
+  }
+  const mismatch = installClassMismatch();
+  if (errEl) {
+    if (mismatch) {
+      errEl.textContent = window.t(
+        "install.classMismatchError",
+        "⚠️ Class mismatch: this package is a {0}, but {1} is a {2}. Physics and animation schemas differ between classes — pick a vanilla {0} target instead."
+      ).split("{0}").join(mismatch.srcType)
+       .split("{1}").join(mismatch.target.name)
+       .split("{2}").join(mismatch.tgtType);
+      errEl.style.display = "block";
+    } else {
+      errEl.style.display = "none";
+    }
+  }
+  return mismatch;
+}
+
 function collectTakenModelNames(exceptModel) {
   const taken = new Set();
   (vanillaVehicles || []).forEach(v => taken.add(String(v.model).toLowerCase()));
@@ -5016,13 +5159,15 @@ function setInstallMode(mode, opts = {}) {
     });
   }
   const replaceBtn = document.querySelector('#installModeToggle .install-mode-btn[data-mode="replace"]');
-  if (replaceBtn) replaceBtn.disabled = isAddonModel(installTargetSourceModel());
+  if (replaceBtn) replaceBtn.disabled = false;
 
   const select = document.getElementById("installVehicleSelect");
   const fields = document.getElementById("installAddonNameFields");
   const nameInput = document.getElementById("installNewModelName");
   const txdInput = document.getElementById("installNewTxdName");
   if (select) select.style.display = m === "addon" ? "none" : "";
+  const pickerBar = document.getElementById("installVehiclePickerBar");
+  if (pickerBar) pickerBar.style.display = m === "addon" ? "none" : "";
   if (fields) fields.style.display = m === "addon" ? "block" : "none";
 
   const src = installTargetSourceModel();
@@ -5065,26 +5210,114 @@ function setInstallMode(mode, opts = {}) {
     if (wizard && wv && fxtKey) wv.fxt_key = fxtKey.value.trim().toUpperCase();
     syncDefaultCategoryToTarget(newName);
   } else if (wizard && wv) {
-    if (select && (!select.value || isAddonModel(select.value))) select.value = wv.source_model || "";
+    if (select && (!select.value || isAddonModel(select.value))) {
+      if (isAddonModel(wv.source_model)) {
+        // Reverse conversion: pre-select a same-class vanilla target so the
+        // user starts from a compatible vehicle and only adjusts if needed.
+        const srcType = String(wv.source_type || "").toLowerCase();
+        const srcFamily = VEHICLE_CLASS_FAMILY[srcType] || srcType;
+        const sameClass = vanillaVehicles.find(v => (v.type || "car") === srcType)
+          || vanillaVehicles.find(v => (VEHICLE_CLASS_FAMILY[v.type || "car"] || v.type || "car") === srcFamily)
+          || vanillaVehicles[0];
+        select.value = sameClass ? sameClass.model : (wv.source_model || "");
+      } else {
+        select.value = wv.source_model || "";
+      }
+      if (select.value) select.dispatchEvent(new Event("change", { bubbles: true }));
+      if (isAddonModel(wv.source_model)) {
+        // A converted wizard car keeps the TARGET's vanilla GXT key by
+        // default (vanilla IDE untouched) while the in-game name stays the
+        // package's proposal; a manually chosen key is respected.
+        const m0 = vanillaVehicles.find(v => v.model.toLowerCase() === (select.value || "").toLowerCase());
+        if (m0 && (!wv.fxt_key || String(wv.fxt_key).toUpperCase() === String(wv.fxt_key_auto || "").toUpperCase())) {
+          wv.fxt_key = m0.model.toUpperCase();
+          wv.fxt_key_auto = wv.fxt_key;
+          const fkEl = document.getElementById("installFxtKey");
+          if (fkEl) fkEl.value = wv.fxt_key;
+        }
+      }
+    }
     const selVal = (select ? select.value : "").toLowerCase();
     if (selVal) wv.target_model = selVal;
     wv.target_txd = "";
     syncDefaultCategoryToTarget(wv.target_model);
   } else {
+    if (select && isAddonModel(installTargetSourceModel()) && (!select.value || isAddonModel(select.value))) {
+      // Single install reverse conversion: same-class vanilla preselect. The
+      // package-proposal GXT key counts as an auto value, so it can be
+      // re-defaulted to the target's vanilla identity below.
+      const fxtKeyEl0 = document.getElementById("installFxtKey");
+      if (fxtKeyEl0 && fxtKeyEl0.value.trim().toUpperCase() === installTargetSourceModel().toUpperCase()) {
+        fxtKeyEl0.dataset.autoKey = fxtKeyEl0.value;
+      }
+      const srcType = installSourceType();
+      const sameClass = vanillaVehicles.find(v => (v.type || "car") === srcType)
+        || vanillaVehicles.find(v => (VEHICLE_CLASS_FAMILY[v.type || "car"] || v.type || "car") === (VEHICLE_CLASS_FAMILY[srcType] || srcType))
+        || vanillaVehicles[0];
+      if (sameClass) {
+        select.value = sameClass.model;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    }
     syncDefaultCategoryToTarget(effectiveInstallTarget());
   }
   refreshAddonIdRow();
   validateNewInstallName();
+  refreshInstallReplaceHint();
+}
+
+// Promise-based themed confirm dialog. Replaces window.confirm so every
+// confirmation shares the app's modal style and a stable app title.
+function showAppConfirm(message) {
+  return new Promise(resolve => {
+    const modal = document.getElementById("appConfirmModal");
+    const msgEl = document.getElementById("appConfirmMessage");
+    const okBtn = document.getElementById("appConfirmOk");
+    const cancelBtn = document.getElementById("appConfirmCancel");
+    const closeBtn = document.getElementById("appConfirmClose");
+    if (!modal || !okBtn || !cancelBtn) {
+      resolve(window.confirm(message));
+      return;
+    }
+    if (msgEl) msgEl.textContent = message;
+    let done = false;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      modal.classList.remove("active");
+      okBtn.removeEventListener("click", onOk);
+      cancelBtn.removeEventListener("click", onCancel);
+      if (closeBtn) closeBtn.removeEventListener("click", onCancel);
+      resolve(result);
+    };
+    const onOk = () => finish(true);
+    const onCancel = () => finish(false);
+    okBtn.addEventListener("click", onOk);
+    cancelBtn.addEventListener("click", onCancel);
+    if (closeBtn) closeBtn.addEventListener("click", onCancel);
+    modal.classList.add("active");
+  });
 }
 
 function setupInstallModeControls() {
   const toggle = document.getElementById("installModeToggle");
   if (toggle) {
     toggle.querySelectorAll(".install-mode-btn").forEach(btn => {
-      btn.addEventListener("click", () => {
+      btn.addEventListener("click", async () => {
         if (btn.disabled) return;
+        const mode = btn.getAttribute("data-mode");
+        // Entering replace mode on an addon package flips the install from a
+        // self-contained addon to overwriting a vanilla vehicle. Confirm so a
+        // stray click cannot silently start that conversion.
+        if (mode === "replace" && currentInstallMode() !== "replace" && isAddonModel(installTargetSourceModel())) {
+          const go = await showAppConfirm(window.t(
+            "install.addonReplaceConfirm",
+            "Install this addon package as a replacement? Its model files will be renamed to the selected vanilla vehicle, and its handling, colors, tuning parts and FLA audio will replace that vehicle's data. Continue?"
+          ));
+          if (!go) return;
+        }
         syncCurrentWizardFormToState();
-        setInstallMode(btn.getAttribute("data-mode"));
+        setInstallMode(mode);
       });
     });
   }
@@ -5151,6 +5384,20 @@ function setupInstallModeControls() {
       validateNewInstallName();
     });
   }
+  const vSearch = document.getElementById("installVehicleSearch");
+  if (vSearch) {
+    vSearch.addEventListener("input", () => {
+      vehiclePickerSearch = vSearch.value;
+      applyVehiclePickerFilter();
+    });
+  }
+  const vType = document.getElementById("installVehicleTypeFilter");
+  if (vType) {
+    vType.addEventListener("change", () => {
+      vehiclePickerType = vType.value;
+      applyVehiclePickerFilter();
+    });
+  }
 }
 
 function paintBadgeFor(model, addonIdOrNull) {
@@ -5174,7 +5421,11 @@ function refreshAddonOptionText(model, id) {
   const opt = [...sel.options].find(o => (o.value || "").toLowerCase() === ml);
   if (opt && opt.dataset.dname) {
     const idTxt = (id != null && id !== "") ? id : (loc({ en: "unassigned" }));
-    opt.textContent = `${opt.dataset.dname} (${ml.toUpperCase()} - ID: ${idTxt})${window.t("install.optionAddonTag", " [Addon]")}`;
+    const tag = opt.dataset.dtype
+      ? window.t("install.optionAddonTypedTag", " [{0} · Addon]")
+          .replace("{0}", window.t("veh." + opt.dataset.dtype, opt.dataset.dtype))
+      : window.t("install.optionAddonTag", " [Addon]");
+    opt.textContent = `${opt.dataset.dname} (${ml.toUpperCase()} - ID: ${idTxt})${tag}`;
   }
 }
 
@@ -5497,7 +5748,12 @@ function loadWizardVehicleToForm(targetIdx, skipSync = false) {
 
   // Update vehicle select
   const vehSelect = document.getElementById("installVehicleSelect");
-  if (vehSelect) vehSelect.value = v.target_model;
+  if (vehSelect) {
+    vehSelect.value = v.target_model;
+    // Keep the newly selected car visible even when a search/class filter is
+    // active; otherwise the pinned option would be hidden for this car only.
+    applyVehiclePickerFilter();
+  }
 
   // Replace / addon mode for this vehicle (custom model + TXD names)
   const wizardModeName = document.getElementById("installNewModelName");
@@ -5844,6 +6100,71 @@ function refreshInstallerLanguage() {
   if (currentInspectData) renderVariantPicker(currentInspectData, true);
 }
 
+// ---------------- Vehicle picker: search box + class filter ----------------
+
+// Class order for the filter dropdown; classes missing from the data are
+// skipped, unknown ones are appended alphabetically.
+const VEHICLE_TYPE_ORDER = ["car", "bike", "bmx", "quad", "heli", "plane", "boat", "trailer", "train"];
+let vehiclePickerOptions = [];   // { opt, value, type, isAddon, haystack }
+let vehiclePickerSearch = "";
+let vehiclePickerType = "";
+
+// Options are filtered through the `hidden` attribute instead of being removed
+// from the DOM, so the select's value — and every option element other code
+// (e.g. refreshAddonOptionText) mutates in place — stays valid regardless of
+// the active filter.
+function applyVehiclePickerFilter() {
+  const sel = document.getElementById("installVehicleSelect");
+  if (!sel) return;
+  const q = vehiclePickerSearch.trim().toLowerCase();
+  let visible = 0;
+  vehiclePickerOptions.forEach(e => {
+    // Addon entries carry a class from the pack's vehicles.ide line (parsed
+    // backend-side) and filter exactly like vanilla entries.
+    const typeOk = !vehiclePickerType || e.type === vehiclePickerType;
+    const textOk = !q || e.haystack.includes(q);
+    const show = typeOk && textOk;
+    e.opt.hidden = !show;
+    if (show) visible++;
+  });
+  // Keep the current selection visible even when it no longer matches, so the
+  // target model never silently changes behind the user's back. This also
+  // covers a selected addon target under a class filter it doesn't match.
+  const cur = (sel.value || "").toLowerCase();
+  if (cur) {
+    const entry = vehiclePickerOptions.find(x => x.value === cur);
+    if (entry && entry.opt.hidden) { entry.opt.hidden = false; visible++; }
+  }
+  const empty = document.getElementById("installVehiclePickerEmpty");
+  if (empty) empty.style.display = (visible || !vehiclePickerOptions.length) ? "none" : "block";
+}
+
+function renderVehicleTypeFilterOptions() {
+  const typeSel = document.getElementById("installVehicleTypeFilter");
+  if (!typeSel) return;
+  const present = new Set();
+  vehiclePickerOptions.forEach(e => present.add(e.type));
+  const ordered = VEHICLE_TYPE_ORDER.filter(t => present.has(t));
+  [...present].filter(t => !VEHICLE_TYPE_ORDER.includes(t)).sort().forEach(t => ordered.push(t));
+  typeSel.innerHTML = "";
+  const allOpt = document.createElement("option");
+  allOpt.value = "";
+  allOpt.textContent = window.t("install.typeAll", "All classes");
+  typeSel.appendChild(allOpt);
+  ordered.forEach(t => {
+    const opt = document.createElement("option");
+    opt.value = t;
+    opt.textContent = window.t("veh." + t, t);
+    typeSel.appendChild(opt);
+  });
+  if (ordered.includes(vehiclePickerType)) {
+    typeSel.value = vehiclePickerType;
+  } else {
+    vehiclePickerType = "";
+    typeSel.value = "";
+  }
+}
+
 function renderInstallStep2(data) {
   window.InstallAssets.setData(data, vanillaVehicles);
   updateExcludedFilesBadge(0);
@@ -5855,6 +6176,7 @@ function renderInstallStep2(data) {
   // Populate vehicle select dropdown
   const vehSelect = document.getElementById("installVehicleSelect");
   vehSelect.innerHTML = "";
+  vehiclePickerOptions = [];
 
   const defaultModel = (data.target_model || "infernus").toLowerCase();
 
@@ -5866,26 +6188,48 @@ function renderInstallStep2(data) {
       opt.selected = true;
     }
     vehSelect.appendChild(opt);
+    vehiclePickerOptions.push({
+      opt,
+      value: v.model.toLowerCase(),
+      type: (v.type || "car").toLowerCase(),
+      isAddon: false,
+      haystack: `${v.name} ${v.model} ${v.id}`.toLowerCase(),
+    });
   });
 
   // Addon models are not in the vanilla list: append them so the select can
   // actually represent (and keep) an addon target instead of going blank.
+  // Their class comes from the package's vehicles.ide line when present
+  // (parser default: "car"), so class filtering covers addon entries too.
   if (data.target_vehicles) {
     data.target_vehicles.forEach(tv => {
       const am = (tv.target_model || tv.model || "").toLowerCase();
       if (!am) return;
       if (vanillaVehicles.some(v => v.model.toLowerCase() === am)) return;
-      if ([...vehSelect.options].some(o => o.value.toLowerCase() === am)) return;
+      if (vehiclePickerOptions.some(e => e.value === am)) return;
       const opt = document.createElement("option");
       opt.value = am;
       const aName = tv.name || am.toUpperCase();
       const aId = tv.proposed_addon_id ? `ID: ${tv.proposed_addon_id}` : `ID: ${loc({ en: "unassigned" })}`;
+      const aType = String(tv.type || "car").toLowerCase();
+      const aTypeText = window.t("veh." + aType, aType);
       opt.dataset.dname = aName;
-      opt.textContent = `${aName} (${am.toUpperCase()} - ${aId})${window.t("install.optionAddonTag", " [Addon]")}`;
+      opt.dataset.dtype = aType;
+      opt.textContent = `${aName} (${am.toUpperCase()} - ${aId})${window.t("install.optionAddonTypedTag", " [{0} · Addon]").replace("{0}", aTypeText)}`;
       if (am === defaultModel) opt.selected = true;
       vehSelect.appendChild(opt);
+      vehiclePickerOptions.push({
+        opt,
+        value: am,
+        type: aType,
+        isAddon: true,
+        haystack: `${aName} ${am} ${tv.proposed_addon_id ?? ""} ${tv.id ?? ""}`.toLowerCase(),
+      });
     });
   }
+
+  renderVehicleTypeFilterOptions();
+  applyVehiclePickerFilter();
 
   const badge = document.getElementById("installModelBadge");
   const match = vanillaVehicles.find(v => v.model.toLowerCase() === defaultModel);
@@ -6016,6 +6360,7 @@ function renderInstallStep2(data) {
       return {
         index: idx,
         source_model: (tv.source_model || tv.model || "").toLowerCase(),
+        source_type: String(tv.type || "car").toLowerCase(),
         target_model: model,
         proposed_addon_id: tv.proposed_addon_id || null,
         addon_id: tv.proposed_addon_id || null,
@@ -6023,6 +6368,7 @@ function renderInstallStep2(data) {
         category: "",
         vanilla_name: vMatch ? vMatch.name : (tv.name || model.toUpperCase()),
         fxt_key: ((tv.fxt_proposal && tv.fxt_proposal.key) || model.toUpperCase()).slice(0, 7),
+        fxt_key_auto: ((tv.fxt_proposal && tv.fxt_proposal.key) || model.toUpperCase()).slice(0, 7),
         fxt_name: (tv.fxt_proposal && tv.fxt_proposal.name) || (vMatch ? vMatch.name : data.proposed_folder_name),
         copy_files: true,
         merge_handling: tv.has_handling !== false,

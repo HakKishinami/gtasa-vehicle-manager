@@ -1056,7 +1056,8 @@ class ModInstaller:
             if not target_model:
                 return {"success": False, "error": "Target replacement vehicle model name not specified"}
             vehicles = [{
-                "source_model": target_model,
+                "source_model": (params.get("source_model") or "").strip().lower() or target_model,
+                "source_type": (params.get("source_type") or "").strip().lower(),
                 "target_model": target_model,
                 "copy_files": params.get("copy_files", True),
                 "merge_handling": params.get("merge_handling", True),
@@ -1072,6 +1073,29 @@ class ModInstaller:
 
         if not vehicles:
             return {"success": False, "error": "All selected vehicles were skipped; installation aborted."}
+
+        # Class compatibility guard for addon -> replace conversions. A
+        # package's handling.cfg line follows its own class schema (car and
+        # bike lines have different column layouts), so re-keying it onto a
+        # vanilla target of another class corrupts the target's physics.
+        _CLASS_FAMILY = {"car": "car", "mtruck": "car", "bike": "bike", "bmx": "bike", "quad": "bike"}
+        for _v in vehicles:
+            _sm = (_v.get("source_model") or "").strip().lower()
+            _tm = (_v.get("target_model") or "").strip().lower()
+            if not _sm or _sm in MODEL_TO_ID or not _tm or _tm not in MODEL_TO_ID or _sm == _tm:
+                continue
+            _src_type = (_v.get("source_type") or "").strip().lower()
+            _tgt_type = str(VANILLA_VEHICLES.get(MODEL_TO_ID[_tm], {}).get("type", "")).strip().lower()
+            if not _src_type or not _tgt_type:
+                continue
+            if _CLASS_FAMILY.get(_src_type, _src_type) != _CLASS_FAMILY.get(_tgt_type, _tgt_type):
+                _tinfo = VANILLA_VEHICLES[MODEL_TO_ID[_tm]]
+                return {
+                    "success": False,
+                    "error": (f"Cannot install this {_src_type.upper()} package as a replacement for "
+                              f"{_tinfo['name']} ({_tm.upper()}, {_tgt_type.upper()}): handling and animation "
+                              f"schemas differ between vehicle classes; pick a vanilla {_src_type.upper()} target instead.")
+                }
 
         primary_target = vehicles[0]["target_model"].lower()
         author_folder = params.get("author_folder", "").strip()

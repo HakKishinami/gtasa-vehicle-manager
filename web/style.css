@@ -425,6 +425,50 @@ body {
   border-left: 1px solid var(--border);
 }
 
+/* Vehicle picker: search + class filter above the target-vehicle select */
+.vehicle-picker-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.vehicle-picker-search {
+  flex: 1;
+  min-width: 0;
+}
+
+.install-pane-card select#installVehicleTypeFilter {
+  width: 150px;
+  min-width: 150px;
+  flex-shrink: 0;
+}
+
+#installVehicleSelect option[hidden] {
+  display: none;
+}
+
+.vehicle-picker-empty {
+  color: var(--accent-amber);
+  margin-top: 6px;
+}
+
+/* Addon package -> replacement install (reverse conversion) */
+.install-convert-hint {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 6px;
+  background: rgba(56, 189, 248, 0.08);
+  color: var(--accent-cyan);
+  line-height: 1.5;
+}
+
+.install-class-error {
+  margin-top: 6px;
+  color: #f85149;
+  font-weight: 600;
+}
+
 /* Mod Grid */
 .mod-grid {
   --card-gap: 16px;
