@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>GTASA Vehicle Mod Manager</title>
-  <link rel="stylesheet" href="style.css?v=20260912-diagnostics1">
+  <link rel="stylesheet" href="style.css?v=20260912-configguard2">
 </head>
 <body>
   <div class="app-container">
@@ -582,6 +582,18 @@
             </div>
           </div>
         </div>
+
+        <!-- Copies of the same config files that another mod provides -->
+        <div class="card" id="foreignConfigsCard">
+          <div class="card-header">
+            <h3 data-i18n="foreign.cardTitle">🧯 Competing Config Copies</h3>
+            <span class="badge" id="foreignConfigsBadge" data-i18n="foreign.badgeChecking">Checking...</span>
+          </div>
+          <div class="card-body">
+            <p class="foreign-hint" data-i18n="foreign.cardHint">ModLoader loads only one copy of each of these config files, so a second copy makes this manager's edits unreliable. Copies the manager did not create are renamed with .vmm-disabled; nothing is deleted.</p>
+            <div id="foreignConfigsList" class="foreign-list"></div>
+          </div>
+        </div>
       </section>
 
       <!-- TAB 4: Raw Readme Parser Lab -->
@@ -1143,6 +1155,29 @@
       </div>
     </div>
 
+    <!-- Competing Config Copies Notice Modal -->
+    <div class="modal" id="foreignConfigsModal">
+      <div class="modal-content" style="max-width: 760px; width: 92%;">
+        <div class="modal-header">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <span style="font-size:22px;">🧯</span>
+            <div>
+              <h3 style="margin:0; font-size:16px;" data-i18n="foreign.modalTitle">Other copies of the vehicle config files were disabled</h3>
+              <p style="margin:2px 0 0 0; font-size:11px; color:var(--text-muted);" data-i18n="foreign.modalDesc">ModLoader picks one winner per file, so these copies competed with the data this manager deploys</p>
+            </div>
+          </div>
+          <button class="close-btn" id="closeForeignConfigsModal">&times;</button>
+        </div>
+        <div class="modal-body" style="padding:16px 20px; max-height:calc(85vh - 120px); overflow-y:auto;">
+          <p class="foreign-hint" style="margin-top:0;" data-i18n="foreign.modalIntro">Each file was only renamed with .vmm-disabled so ModLoader stops loading it. Merge anything you still need into the manager's own copies, then delete the disabled files.</p>
+          <div id="foreignConfigsModalList" class="foreign-list"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="closeForeignConfigsModalBtn" data-i18n="foreign.btnClose">Close</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Tuning Part ID Editor Modal -->
     <div class="modal" id="tuningIdModal">
       <div class="modal-content" style="max-width: 480px; width: 90%;">
@@ -1291,10 +1326,10 @@
     <div id="toast" class="toast"></div>
   </div>
 
-  <script src="i18n.js?v=20260912-diagnostics1"></script>
+  <script src="i18n.js?v=20260912-configguard2"></script>
   <script src="install-assets.js?v=20260911-pj1"></script>
   <script src="install-reminder.js?v=20260910-reminder1"></script>
   <script src="source-documents.js?v=20260912-used-source1"></script>
-  <script src="app.js?v=20260912-pickerfix1"></script>
+  <script src="app.js?v=20260912-configguard2"></script>
 </body>
 </html>

@@ -3984,3 +3984,25 @@ pre {
   overflow-wrap: anywhere;
   user-select: text;
 }
+/* Competing config copies disabled by the guard. */
+.foreign-hint { font-size: 13px; line-height: 1.6; color: var(--text-muted); margin: 0 0 4px 0; }
+.foreign-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.foreign-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #05070a;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 10px 12px;
+}
+.foreign-row-new { border-color: rgba(251, 191, 36, 0.4); }
+.foreign-row-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.foreign-row-title { font-size: 13px; font-weight: 600; color: var(--text-bright); }
+.foreign-open { margin-left: auto; }
+.foreign-path {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: ui-monospace, Consolas, monospace;
+  overflow-wrap: anywhere;
+}

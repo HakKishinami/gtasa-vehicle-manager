@@ -36,6 +36,8 @@ document.addEventListener("DOMContentLoaded", () => {
   setupInstaller();
   setupIdPool();
   setupDiagnostics();
+  setupForeignConfigs();
+  runForeignConfigGuard();
   setupCardEditors();
   setupFxtNameEditor();
   setupTuningPartControls();
@@ -359,6 +361,10 @@ function setupDataFolderControls() {
           discardInspectorContext();
           await loadSystemStatus();
           await loadMods();
+          // A different game or shadow folder changes which config copies count
+          // as this manager's own.
+          foreignConfigsNotified = false;
+          await runForeignConfigGuard();
         } else {
           showToast((loc({ en: "Switch failed: " })) + data.error, "error");
         }
@@ -3686,6 +3692,10 @@ function setupModals() {
           discardInspectorContext();
           await loadSystemStatus();
           await loadMods();
+          // A different game or shadow folder changes which config copies count
+          // as this manager's own.
+          foreignConfigsNotified = false;
+          await runForeignConfigGuard();
         } else {
           if (pathAlert) {
             pathAlert.className = "alert-box warning";
@@ -7062,6 +7072,138 @@ async function openDiagnosticsFolder() {
   } catch (err) {
     console.error("Failed to open the diagnostics folder:", err);
   }
+}
+
+let foreignConfigsNotified = false;
+
+function setupForeignConfigs() {
+  const modal = document.getElementById("foreignConfigsModal");
+  const closeBtn = document.getElementById("closeForeignConfigsModal");
+  const closeBtnFooter = document.getElementById("closeForeignConfigsModalBtn");
+  const hideModal = () => {
+    if (modal) modal.classList.remove("active");
+  };
+  if (closeBtn) closeBtn.addEventListener("click", hideModal);
+  if (closeBtnFooter) closeBtnFooter.addEventListener("click", hideModal);
+}
+
+// Competing copies of handling.cfg / carcols.dat / carmods.dat / vehicles.ide /
+// shopping.dat / veh_mods.ide are renamed by the backend so ModLoader stops
+// loading them; the user is told once per session and can still merge by hand.
+async function runForeignConfigGuard() {
+  try {
+    const res = await fetch("/api/foreign-configs/scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const data = await res.json();
+    if (!data.success) {
+      showToast(window.t("foreign.loadFailed", "Could not check for competing config copies"), "error");
+      return;
+    }
+    renderForeignConfigs(data);
+    if ((data.disabled || []).length && !foreignConfigsNotified) {
+      foreignConfigsNotified = true;
+      openForeignConfigsModal(data.disabled);
+    }
+  } catch (err) {
+    console.error("Failed to check for competing config copies:", err);
+  }
+}
+
+function foreignFolderOf(filePath) {
+  const parts = String(filePath || "").split(/[\\/]/);
+  parts.pop();
+  return parts.join("\\");
+}
+
+async function openContainingFolder(filePath) {
+  const folder = foreignFolderOf(filePath);
+  if (!folder) return;
+  try {
+    const res = await fetch("/api/open-folder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: folder }),
+    });
+    const data = await res.json();
+    if (!data.success) {
+      showToast(data.error || window.t("foreign.openFailed", "Could not open that folder"), "error");
+    }
+  } catch (err) {
+    console.error("Failed to open the containing folder:", err);
+  }
+}
+
+function foreignConfigRow(entry, justDisabled) {
+  const filePath = entry.disabled_path || entry.path || "";
+  const row = document.createElement("div");
+  row.className = "foreign-row" + (justDisabled ? " foreign-row-new" : "");
+
+  const head = document.createElement("div");
+  head.className = "foreign-row-head";
+
+  const title = document.createElement("span");
+  title.className = "foreign-row-title";
+  title.textContent = entry.name;
+
+  const state = document.createElement("span");
+  state.className = "badge" + (justDisabled ? " badge-warning" : "");
+  state.textContent = justDisabled
+    ? window.t("foreign.stateDisabledNow", "just disabled")
+    : window.t("foreign.stateDisabled", "disabled earlier");
+
+  const openBtn = document.createElement("button");
+  openBtn.type = "button";
+  openBtn.className = "btn btn-secondary btn-sm foreign-open";
+  openBtn.textContent = window.t("foreign.btnOpenFolder", "📂 Open folder");
+  openBtn.addEventListener("click", () => openContainingFolder(filePath));
+
+  head.append(title, state, openBtn);
+
+  const pathText = document.createElement("span");
+  pathText.className = "foreign-path";
+  pathText.textContent = filePath;
+
+  row.append(head, pathText);
+  return row;
+}
+
+function renderForeignConfigs(data) {
+  const freshlyDisabled = data.disabled || [];
+  const earlier = data.already_disabled || [];
+  const list = document.getElementById("foreignConfigsList");
+  if (list) {
+    list.replaceChildren();
+    if (!freshlyDisabled.length && !earlier.length) {
+      const empty = document.createElement("p");
+      empty.className = "field-hint";
+      empty.textContent = window.t("foreign.none", "No competing copies found.");
+      list.appendChild(empty);
+    } else {
+      freshlyDisabled.forEach(entry => list.appendChild(foreignConfigRow(entry, true)));
+      earlier.forEach(entry => list.appendChild(foreignConfigRow(entry, false)));
+    }
+  }
+  const badge = document.getElementById("foreignConfigsBadge");
+  if (badge) {
+    const total = freshlyDisabled.length + earlier.length;
+    badge.className = "badge " + (total ? "badge-warning" : "badge-success");
+    badge.textContent = total
+      ? window.t("foreign.badgeCount", "{0} disabled").replace("{0}", total)
+      : window.t("foreign.badgeNone", "None");
+  }
+}
+
+function openForeignConfigsModal(entries) {
+  const list = document.getElementById("foreignConfigsModalList");
+  if (list) {
+    list.replaceChildren();
+    entries.forEach(entry => list.appendChild(foreignConfigRow(entry, true)));
+  }
+  const modal = document.getElementById("foreignConfigsModal");
+  if (modal) modal.classList.add("active");
 }
 
 function setupIdPool() {

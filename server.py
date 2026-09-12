@@ -32,6 +32,7 @@ from core.atomic_io import write_text_atomic
 from core.fxt_installer import update_fxt_entry
 from core.source_documents import archive_used_sources, list_source_documents, read_source_document, enrich_archived_vehicle_metadata
 from core.diagnostics import diagnostics_dir, export_bundle, read_operations, record_operation
+from core import foreign_configs
 from core.vanilla_data import CARCOLS_PALETTE, SPECIAL_FEATURE_TARGETS, VANILLA_VEHICLES
 from core.backup_manager import BackupManager
 from core.seven_zip import get_7zip_status, SEVEN_ZIP_DOWNLOAD_URL
@@ -350,6 +351,28 @@ def set_active_game_path(new_path: str, new_data_folder: str = None, new_addon_f
     cleaner = ModCleaner(GAME_PATH, DATA_FOLDER, backup_manager=backup_mgr)
     id_mgr = IdManager(GAME_PATH, shadow_dir=shadow_dir)
     scanner = ModScanner(_get_mod_scan_dir(), GAME_PATH, data_dir=shadow_dir, addon_dir=_get_addon_scan_dir())
+    refresh_foreign_configs()
+
+
+FOREIGN_CONFIGS_STATE: Dict[str, Any] = {
+    "checked": False, "disabled": [], "already_disabled": [], "errors": [],
+}
+
+
+def refresh_foreign_configs() -> Dict[str, Any]:
+    """Take competing copies of the manager's config files out of ModLoader's view."""
+    global FOREIGN_CONFIGS_STATE
+    result = foreign_configs.scan_and_disable(GAME_PATH, shadow_dir)
+    FOREIGN_CONFIGS_STATE = {"checked": True, **result}
+    if result["disabled"] or result["errors"]:
+        record_operation(
+            "disable_foreign_configs",
+            {"success": not result["errors"], "errors": [entry["error"] for entry in result["errors"]]},
+            {"game_path": GAME_PATH, "shadow_dir": shadow_dir,
+             "disabled": [entry["path"] for entry in result["disabled"]][:MAX_CONTEXT_FILES],
+             "already_disabled": [entry["path"] for entry in result["already_disabled"]][:MAX_CONTEXT_FILES]},
+        )
+    return FOREIGN_CONFIGS_STATE
 
 
 
@@ -552,6 +575,10 @@ class ModManagerHandler(BaseHTTPRequestHandler):
                 "dir": str(directory),
                 "operations": read_operations(limit)
             })
+            return
+
+        elif path == "/api/foreign-configs":
+            self._send_json({"success": True, **FOREIGN_CONFIGS_STATE})
             return
 
         elif path == "/api/mods":
@@ -1281,6 +1308,10 @@ class ModManagerHandler(BaseHTTPRequestHandler):
         elif path == "/api/diagnostics/export":
             result = export_bundle(CONFIG_PATH)
             self._send_json(result, status=200 if result["success"] else 500)
+            return
+
+        elif path == "/api/foreign-configs/scan":
+            self._send_json({"success": True, **refresh_foreign_configs()})
             return
 
         elif path == "/api/mods/delete":
