@@ -14,7 +14,7 @@ import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import webbrowser
 import threading
-from typing import Any, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -30,6 +30,8 @@ from core.install_reminder import check_existing_models
 from core.id_manager import IdManager
 from core.atomic_io import write_text_atomic
 from core.fxt_installer import update_fxt_entry
+from core.source_documents import archive_used_sources, list_source_documents, read_source_document, enrich_archived_vehicle_metadata
+from core.diagnostics import diagnostics_dir, export_bundle, read_operations, record_operation
 from core.vanilla_data import CARCOLS_PALETTE, SPECIAL_FEATURE_TARGETS, VANILLA_VEHICLES
 from core.backup_manager import BackupManager
 from core.seven_zip import get_7zip_status, SEVEN_ZIP_DOWNLOAD_URL
@@ -351,6 +353,35 @@ def set_active_game_path(new_path: str, new_data_folder: str = None, new_addon_f
 
 
 
+MAX_CONTEXT_VEHICLES = 20
+MAX_CONTEXT_FILES = 50
+
+
+def _install_context(body: Dict[str, Any]) -> Dict[str, Any]:
+    """The user's decisions, without the parsed payload the log does not need."""
+    vehicles = body.get("vehicles") or []
+    return {
+        "inspect_dir": body.get("inspect_dir"),
+        "folder_name": body.get("folder_name"),
+        "target_category": body.get("target_category"),
+        "target_model": body.get("target_model"),
+        "vehicles": [{key: item.get(key) for key in (
+            "source_model", "target_model", "is_addon", "category",
+            "merge_handling", "merge_carcols", "merge_carmods", "merge_fla", "skip")}
+            for item in vehicles[:MAX_CONTEXT_VEHICLES] if isinstance(item, dict)],
+        "excluded_files": list(body.get("excluded_files") or [])[:MAX_CONTEXT_FILES],
+        "excluded_tuning_parts": list(body.get("excluded_tuning_parts") or [])[:MAX_CONTEXT_FILES],
+    }
+
+
+def _merge_context(info: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "mod_dir": info.get("mod_dir"),
+        "target_model": info.get("target_model"),
+        "target_models": list(info.get("target_models") or [])[:MAX_CONTEXT_VEHICLES],
+    }
+
+
 class ModManagerHandler(BaseHTTPRequestHandler):
     # Bounds how long a stalled client can hold the single-threaded server.
     timeout = REQUEST_SOCKET_TIMEOUT_SECONDS
@@ -504,6 +535,25 @@ class ModManagerHandler(BaseHTTPRequestHandler):
             })
             return
 
+        elif path == "/api/diagnostics":
+            try:
+                limit = int(query.get("limit", ["50"])[0])
+            except ValueError:
+                limit = 50
+            directory = diagnostics_dir()
+            try:
+                # The UI offers to open this folder; it should exist even before
+                # the first operation has been recorded.
+                directory.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+            self._send_json({
+                "success": True,
+                "dir": str(directory),
+                "operations": read_operations(limit)
+            })
+            return
+
         elif path == "/api/mods":
             mods = scanner.scan_installed_mods()
             replace_mods = [m for m in mods if m.get("mod_type") != "addon"]
@@ -541,6 +591,8 @@ class ModManagerHandler(BaseHTTPRequestHandler):
 
             detail = parser.inspect_mod_directory(target_dir)
             if detail.get("success"):
+                detail["source_documents"] = list_source_documents(target_dir)
+                enrich_archived_vehicle_metadata(detail, merger)
                 t_models = detail.get("target_models", [])
                 req_model = query.get("model", [None])[0]
                 active_model = req_model.strip().lower() if req_model else detail.get("target_model")
@@ -736,6 +788,22 @@ class ModManagerHandler(BaseHTTPRequestHandler):
             self._send_json(detail)
             return
 
+        elif path == "/api/mod-document":
+            target_dir = query.get("full_path", [""])[0]
+            relative_path = query.get("document", [""])[0]
+            modloader_root = os.path.realpath(os.path.join(GAME_PATH, "modloader"))
+            try:
+                inside = (bool(GAME_PATH) and bool(target_dir) and
+                          os.path.commonpath([os.path.realpath(target_dir), modloader_root]) == modloader_root)
+            except ValueError:
+                inside = False
+            if not inside:
+                self._send_json({"success": False, "error_code": "unavailable"}, status=404)
+                return
+            result = read_source_document(target_dir, relative_path)
+            self._send_json(result, status=200 if result["success"] else 404)
+            return
+
         elif path == "/api/vehicle/configs":
             model = query.get("model", [""])[0].strip()
             if not model:
@@ -904,6 +972,16 @@ class ModManagerHandler(BaseHTTPRequestHandler):
                 self._send_json(info, status=400)
                 return
             res = merger.apply_merge(info)
+            if res.get("success"):
+                # This explicit action processes active TXT presets only;
+                # archived sources are absent from info's merge input.
+                archived = archive_used_sources(info.get("source_txt_files", []), {
+                    "operation": "apply_merge", "applied_configs": res.get("applied_files", [])})
+                res["archived_sources"] = archived["files"]
+                if not archived["success"]:
+                    res["success"] = False
+                    res.setdefault("errors", []).extend(archived["errors"])
+            record_operation("apply_merge", res, _merge_context(info))
             self._send_json(res)
             return
 
@@ -1140,7 +1218,15 @@ class ModManagerHandler(BaseHTTPRequestHandler):
             return
 
         elif path == "/api/installer/install":
-            res = installer.execute_install(body)
+            try:
+                res = installer.execute_install(body)
+            except Exception as error:
+                # The log is the only record of a crash: the packed build has no
+                # console, so the user can only send what is written here.
+                record_operation("install", {"success": False, "error": f"{type(error).__name__}: {error}"},
+                                 _install_context(body))
+                raise
+            record_operation("install", res, _install_context(body))
             if not res.get("success"):
                 self._send_json(res, status=400)
                 return
@@ -1190,6 +1276,11 @@ class ModManagerHandler(BaseHTTPRequestHandler):
                     self._send_error(f"Failed to open folder: {e}")
                     return
             self._send_error("Specified folder does not exist")
+            return
+
+        elif path == "/api/diagnostics/export":
+            result = export_bundle(CONFIG_PATH)
+            self._send_json(result, status=200 if result["success"] else 500)
             return
 
         elif path == "/api/mods/delete":

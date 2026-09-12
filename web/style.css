@@ -3918,3 +3918,69 @@ pre {
   color: #a1a1aa;
   border-color: #3f3f46;
 }
+/* Original documents remain readable independently of deployed parameters. */
+.source-documents-toolbar {
+  display: grid;
+  gap: 10px;
+  padding: 16px 18px 0;
+}
+.source-documents-toolbar label { font-size: 12px; color: var(--text-secondary, #a0a6b8); }
+.source-documents-toolbar select { width: 100%; min-width: 0; }
+.source-document-meta { display: flex; align-items: center; gap: 12px; font-size: 12px; }
+.source-documents-toolbar .field-hint { margin: 0; line-height: 1.55; }
+.inspector-layout .source-document-body pre {
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+  user-select: text;
+}
+/* Operation log: one row per install or merge, readable without hovering. */
+.diagnostics-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.diagnostics-heading { font-size: 13px; color: var(--text-bright); margin: 18px 0 8px 0; }
+.diagnostics-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px;
+}
+.diagnostics-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  text-align: left;
+  background: #05070a;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 8px 10px;
+  color: var(--text-bright);
+  font-size: 12px;
+  cursor: pointer;
+}
+.diagnostics-row:hover { border-color: rgba(56, 189, 248, 0.45); }
+.diagnostics-row.failed { border-color: rgba(251, 191, 36, 0.35); }
+.diagnostics-row-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.diagnostics-kind { font-weight: 600; }
+.diagnostics-target { color: var(--text-secondary, #a0a6b8); font-family: ui-monospace, Consolas, monospace; }
+.diagnostics-time { margin-left: auto; color: var(--text-muted); font-size: 11px; }
+.diagnostics-message { color: var(--accent-amber); font-size: 11px; overflow-wrap: anywhere; }
+.diagnostics-detail {
+  margin: 12px 0 0 0;
+  max-height: 320px;
+  overflow: auto;
+  background: #05070a;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}

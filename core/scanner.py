@@ -6,6 +6,8 @@ import os
 import re
 from typing import Dict, Any, List, Optional
 from .parser import DualTrackParser
+from .merger import ConfigMerger
+from .source_documents import enrich_archived_vehicle_metadata
 from .tuning_manager import TuningManager
 from .fla_manager import FLAManager
 from .vanilla_data import VANILLA_VEHICLES, MODEL_TO_ID, SPECIAL_FEATURE_TARGETS, NATIVE_SPECIAL_FEATURES, VANILLA_AUDIO_SETTINGS
@@ -126,6 +128,8 @@ class ModScanner:
         if not inspection["success"]:
             return None
 
+        deployed_configs = enrich_archived_vehicle_metadata(
+            inspection, ConfigMerger(self.shadow_dir, self.game_path)) if inspection.get("archived_source_count") else {}
         target_model = inspection.get("target_model")
         vanilla_info = inspection.get("target_vanilla")
         target_models = inspection.get("target_models", [target_model] if target_model else [])
@@ -165,7 +169,12 @@ class ModScanner:
 
         # Check tuning safety across all carmods
         tuning_parts = []
-        for cmod in inspection["parsed"]["carmods"]:
+        installed_carmods = list(inspection["parsed"]["carmods"])
+        for cfg in deployed_configs.values():
+            cm = (cfg.get("carmods") or {}).get("decomposed")
+            if cm and cm not in installed_carmods:
+                installed_carmods.append(cm)
+        for cmod in installed_carmods:
             for pname in cmod.get("part_names", []):
                 p_clean = pname.lower().strip()
                 if re.match(r'^[a-z0-9_]{2,24}$', p_clean) and p_clean not in tuning_parts:
@@ -241,9 +250,12 @@ class ModScanner:
             "vanilla_name": vanilla_display_name,
             "vanilla_type": vanilla_info["type"] if vanilla_info else "car",
             "tuning_shop": vanilla_info["shop"] if vanilla_info else "none",
-            "has_handling": len(inspection["parsed"]["handling"]) > 0,
-            "has_carcols": len(inspection["parsed"]["carcols"]) > 0,
-            "has_carmods": len(inspection["parsed"]["carmods"]) > 0,
+            "has_handling": bool(inspection["parsed"]["handling"]) or any(
+                c.get("handling") and c["handling"].get("source") != "vanilla" for c in deployed_configs.values()),
+            "has_carcols": bool(inspection["parsed"]["carcols"]) or any(
+                c.get("carcols") and c["carcols"].get("source") != "vanilla" for c in deployed_configs.values()),
+            "has_carmods": bool(inspection["parsed"]["carmods"]) or any(
+                c.get("carmods") and c["carmods"].get("source") != "vanilla" for c in deployed_configs.values()),
             "tuning_dff_count": inspection["files"]["tuning_dff_count"],
             "total_tuning_parts": len(tuning_parts),
             "missing_shopping_parts": missing_shopping_parts,

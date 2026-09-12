@@ -16,6 +16,9 @@ backups/
 _legacy_game_backups/
 *.bak
 
+# Operation log, source manifests and support exports
+diagnostics/
+
 # Virtual environments
 venv/
 .venv/

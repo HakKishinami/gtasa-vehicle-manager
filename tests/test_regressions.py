@@ -15,6 +15,9 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, os.environ.get("TEST_PROJECT", str(ROOT if (ROOT / "core").is_dir() else ROOT.parent)))
+# Installs write an operation log and source manifests; keep them out of the
+# working copy for the whole test run.
+os.environ.setdefault("VMM_DIAGNOSTICS_ROOT", str(Path(tempfile.gettempdir()) / "vmm-test-diagnostics"))
 from core.fla_manager import FLAManager
 from core.installer import ModInstaller
 from core.merger import ConfigMerger
@@ -372,7 +375,7 @@ class InstallRegression(Fixture):
         self.assertTrue((addon_dir / "newcar.dff").is_file())
         self.assertEqual((addon_dir / "newcar.dff").read_bytes(), b"newcar model bytes")
         # The vehicle-specific doc follows its own vehicle, not the first dir.
-        self.assertTrue((addon_dir / "newcar.txt").is_file())
+        self.assertTrue((addon_dir / "newcar.txt.used_source").is_file())
         # Skipped vehicle assets/docs must not be deployed or renamed.
         self.assertFalse((addon_dir / "rancher.dff").exists())
         self.assertFalse((addon_dir / "rancher.txt").exists())
@@ -625,7 +628,7 @@ class FileExclusionRegression(Fixture):
         dest_dir = self.game / "modloader" / "Modded Cars" / "InfernusMod"
         self.assertTrue((dest_dir / "infernus.dff").is_file())
         self.assertTrue((dest_dir / "infernus.txd").is_file())
-        self.assertTrue((dest_dir / "readme.txt").is_file())
+        self.assertTrue((dest_dir / "readme.txt.used_source").is_file())
 
         # Excluded files must NOT be copied anywhere in modloader
         self.assertFalse((dest_dir / "blister.txt").exists())
@@ -2166,7 +2169,7 @@ class AddonToReplaceConversionRegression(unittest.TestCase):
         # the author's own model name in every section.
         (self.source / "readme.txt").write_text(
             "vehicles.ide\n"
-            "ID, \trecurs,     recurs,     car,        RECURS,     RECURS,     null, executive,  7, \t0,\t1f10,   -1, 0.79, 0.79, \t0\n\n"
+            "ID, \trecurs,     recurs,     car,        RECURS,     RECURS,     null, normal,  10, \t0,\t1f10,   -1, 0.67, 0.67, \t0\n\n"
             "handling.cfg\n" + custom_handling + "\n\n"
             "carcols.dat\nrecurs, 42, 42\n\n"
             "carmods.dat\nrecurs, nto_b_l, nto_b_s\n",
@@ -2212,22 +2215,20 @@ class AddonToReplaceConversionRegression(unittest.TestCase):
         self.assertIn("nto_b_l", carmods.lower())
         self.assertNotIn("recurs", carmods.lower())
 
-        # Replacement installs never ADD a vehicles.ide line: alpha's vanilla
-        # definition is kept (ID/model/txd/handling untouched); only its GXT
-        # game-name column may be re-pointed by the payload's fxt_key.
+        # Replacement installs never ADD a vehicles.ide line: alpha's IDE line
+        # keeps the target identity (ID/model/txd/handling) with the mod's
+        # behavioral columns merged in (class normal, wheel scale 0.67), and
+        # the GXT game-name column re-pointed by the payload's fxt_key.
         ide = (self.shadow / "vehicles.ide").read_text(encoding="utf-8-sig")
         alpha_lines = [l for l in ide.splitlines() if l.strip().lower().startswith("602,")]
         self.assertEqual(len(alpha_lines), 1)
-        dec = DualTrackParser().decompose_ide(alpha_lines[0])
-        self.assertEqual(dec["id"], 602)
-        self.assertEqual(dec["model_name"], "alpha")
-        self.assertEqual(dec["txd_name"], "alpha")
-        self.assertEqual(dec["handling_id"], "ALPHA")
-        self.assertEqual(str(dec["game_name"]).upper(), "RECURS")
+        tokens = [t.strip() for t in alpha_lines[0].split(",")]
+        self.assertEqual(tokens[:6], ["602", "alpha", "alpha", "car", "ALPHA", "RECURS"])
+        self.assertEqual(tokens[6:], ["null", "normal", "10", "0", "1f10", "-1", "0.67", "0.67", "0"])
         for line in ide.splitlines():
-            tokens = [t.strip() for t in line.split(",")]
-            if len(tokens) >= 3 and tokens[1]:
-                self.assertNotEqual(tokens[1].lower(), "recurs")
+            tk = [t.strip() for t in line.split(",")]
+            if len(tk) >= 3 and tk[1]:
+                self.assertNotEqual(tk[1].lower(), "recurs")
 
     def test_addon_to_replace_rejects_cross_class_target(self):
         res = self.installer.execute_install(self.payload(target_model="pcj600"))
@@ -2238,17 +2239,23 @@ class AddonToReplaceConversionRegression(unittest.TestCase):
 
     def test_addon_to_replace_with_target_gxt_key_keeps_vanilla_identity(self):
         # Default conversion naming: the target's vanilla GXT key paired with
-        # the package's display name ("ALPHA Recursion"). The vanilla IDE line
-        # is untouched (no shadow override is even generated) and the deployed
-        # fxt re-points the vanilla key at the mod's name.
+        # the package's display name ("ALPHA Recursion"). The merged shadow
+        # IDE line keeps the target's identity columns and adopts the mod's
+        # behavioral columns; the vanilla data/ file is never touched.
         res = self.installer.execute_install(self.payload(fxt_key="ALPHA", fxt_name="Recursion"))
         self.assertTrue(res["success"], res)
         shadow_ide = self.shadow / "vehicles.ide"
-        if shadow_ide.exists():
-            for line in shadow_ide.read_text(encoding="utf-8-sig").splitlines():
-                tokens = [t.strip() for t in line.split(",")]
-                if len(tokens) >= 3 and tokens[1]:
-                    self.assertNotEqual(tokens[1].lower(), "recurs")
+        self.assertTrue(shadow_ide.exists())
+        alpha_lines = [l for l in shadow_ide.read_text(encoding="utf-8-sig").splitlines()
+                       if l.strip().lower().startswith("602,")]
+        self.assertEqual(len(alpha_lines), 1)
+        tokens = [t.strip() for t in alpha_lines[0].split(",")]
+        self.assertEqual(tokens[:6], ["602", "alpha", "alpha", "car", "ALPHA", "ALPHA"])
+        self.assertEqual(tokens[6:], ["null", "normal", "10", "0", "1f10", "-1", "0.67", "0.67", "0"])
+        for line in shadow_ide.read_text(encoding="utf-8-sig").splitlines():
+            tk = [t.strip() for t in line.split(",")]
+            if len(tk) >= 3 and tk[1]:
+                self.assertNotEqual(tk[1].lower(), "recurs")
         game_ide = (self.game / "data" / "vehicles.ide").read_text(encoding="utf-8-sig")
         self.assertIn("ALPHA, ALPHA", game_ide)
         self.assertNotIn("RECURS", game_ide.upper())

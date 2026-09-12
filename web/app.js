@@ -35,6 +35,7 @@ document.addEventListener("DOMContentLoaded", () => {
   setupLab();
   setupInstaller();
   setupIdPool();
+  setupDiagnostics();
   setupCardEditors();
   setupFxtNameEditor();
   setupTuningPartControls();
@@ -1333,6 +1334,7 @@ function setupDensityToggle() {
 // ---------------- Mod Inspector ----------------
 
 function resetInspectorView() {
+  if (window.SourceDocuments) window.SourceDocuments.render(null);
   const nameEl = document.getElementById("inspectModName");
   if (nameEl) nameEl.textContent = window.t("inspect.titleDefault", "Select a mod to inspect");
   const authorEl = document.getElementById("inspectAuthor");
@@ -2751,8 +2753,8 @@ function renderInspectorData(detail, summary) {
   const initialModel = detail.target_model || (detail.target_models && detail.target_models[0]) || "";
   renderInspectorVehicleView(initialModel);
 
-  // Raw Readme Content
-  document.getElementById("rawReadmeContent").textContent = detail.raw_text_summary || window.t("inspect.noReadmeFound", "(No Readme or txt documentation found)");
+  if (window.SourceDocuments) window.SourceDocuments.render(detail);
+  else document.getElementById("rawReadmeContent").textContent = detail.raw_text_summary || window.t("inspect.noReadmeFound", "(No Readme or txt documentation found)");
 }
 
 function renderInspectorVehicleView(model) {
@@ -3831,6 +3833,8 @@ async function executeApplyMerge(modPath) {
     if (data.success) {
       showToast(window.t("toast.applyMergeSuccess", "Merged successfully! Updated files: ") + data.applied_files.join(", "), "success");
       loadSystemStatus();
+      await loadMods();
+      if (activeMod && isSamePath(activeMod.full_path, modPath)) await inspectMod(activeMod);
     } else {
       showToast((loc({ en: "Errors during merge: " })) + data.errors.join("; "), "error");
     }
@@ -5264,6 +5268,7 @@ function setInstallMode(mode, opts = {}) {
   refreshAddonIdRow();
   validateNewInstallName();
   refreshInstallReplaceHint();
+  applyVehiclePickerFilter();
 }
 
 // Promise-based themed confirm dialog. Replaces window.confirm so every
@@ -6117,13 +6122,17 @@ function applyVehiclePickerFilter() {
   const sel = document.getElementById("installVehicleSelect");
   if (!sel) return;
   const q = vehiclePickerSearch.trim().toLowerCase();
+  // A package-owned addon model is only a legal target while that vehicle is
+  // installed as an addon. Offered as a replacement it reads as an installed
+  // vehicle the game does not have - and picking it would replace nothing.
+  const addonOffered = currentInstallMode() === "addon";
   let visible = 0;
   vehiclePickerOptions.forEach(e => {
     // Addon entries carry a class from the pack's vehicles.ide line (parsed
     // backend-side) and filter exactly like vanilla entries.
     const typeOk = !vehiclePickerType || e.type === vehiclePickerType;
     const textOk = !q || e.haystack.includes(q);
-    const show = typeOk && textOk;
+    const show = typeOk && textOk && (addonOffered || !e.isAddon);
     e.opt.hidden = !show;
     if (show) visible++;
   });
@@ -6880,6 +6889,179 @@ function fallbackCopy(val, successMsg) {
     showToast("Failed to copy", "error");
   }
   document.body.removeChild(ta);
+}
+
+let diagnosticsDirPath = "";
+
+const DIAGNOSTIC_OPERATION_KEYS = {
+  install: "diag.operationInstall",
+  apply_merge: "diag.operationMerge",
+};
+
+function setupDiagnostics() {
+  const modal = document.getElementById("diagnosticsModal");
+  const btnHeader = document.getElementById("btnOpenDiagnostics");
+  const closeBtn = document.getElementById("closeDiagnosticsModal");
+  const closeBtnFooter = document.getElementById("closeDiagnosticsModalBtn");
+  const exportBtn = document.getElementById("btnExportDiagnostics");
+  const folderBtn = document.getElementById("btnOpenDiagnosticsFolder");
+  const refreshBtn = document.getElementById("btnRefreshDiagnostics");
+
+  const hideModal = () => {
+    if (modal) modal.classList.remove("active");
+  };
+  if (closeBtn) closeBtn.addEventListener("click", hideModal);
+  if (closeBtnFooter) closeBtnFooter.addEventListener("click", hideModal);
+  if (btnHeader) btnHeader.addEventListener("click", openDiagnosticsModal);
+  if (refreshBtn) refreshBtn.addEventListener("click", loadDiagnostics);
+  if (exportBtn) exportBtn.addEventListener("click", createDiagnosticsPackage);
+  if (folderBtn) folderBtn.addEventListener("click", openDiagnosticsFolder);
+}
+
+async function openDiagnosticsModal() {
+  const modal = document.getElementById("diagnosticsModal");
+  if (!modal) return;
+  modal.classList.add("active");
+  await loadDiagnostics();
+}
+
+async function loadDiagnostics() {
+  const list = document.getElementById("diagnosticsList");
+  if (!list) return;
+  try {
+    const res = await fetch("/api/diagnostics?limit=50");
+    const data = await res.json();
+    if (!data.success) {
+      showToast(window.t("diag.loadFailed", "Could not read the operation log"), "error");
+      return;
+    }
+    diagnosticsDirPath = data.dir || "";
+    renderDiagnostics(data.operations || []);
+  } catch (err) {
+    console.error("Failed to load the operation log:", err);
+    showToast(window.t("common.requestFailed", "Request failed: ") + err, "error");
+  }
+}
+
+function diagnosticsTargetLabel(entry) {
+  const context = entry.context || {};
+  const pairs = (context.vehicles || [])
+    .filter(v => v && (v.source_model || v.target_model))
+    .map(v => `${v.source_model || "?"} → ${v.target_model || "?"}`);
+  if (pairs.length) return pairs.join(", ");
+  if (context.target_model) return context.target_model;
+  if (Array.isArray(context.target_models) && context.target_models.length) return context.target_models.join(", ");
+  return context.folder_name || context.mod_dir || window.t("diag.noTarget", "(no target recorded)");
+}
+
+function renderDiagnostics(operations) {
+  const list = document.getElementById("diagnosticsList");
+  const detail = document.getElementById("diagnosticsDetail");
+  if (!list) return;
+  list.replaceChildren();
+  if (detail) {
+    detail.hidden = true;
+    detail.textContent = "";
+  }
+  if (!operations.length) {
+    const empty = document.createElement("p");
+    empty.className = "field-hint";
+    empty.textContent = window.t("diag.empty", "No operations recorded yet.");
+    list.appendChild(empty);
+    return;
+  }
+  operations.forEach((entry) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "diagnostics-row" + (entry.success ? "" : " failed");
+    row.addEventListener("click", () => {
+      if (!detail) return;
+      detail.hidden = false;
+      detail.textContent = JSON.stringify(entry, null, 2);
+    });
+
+    const head = document.createElement("div");
+    head.className = "diagnostics-row-head";
+
+    const status = document.createElement("span");
+    status.className = "badge " + (entry.success ? "badge-success" : "badge-warning");
+    status.textContent = entry.success
+      ? window.t("diag.statusOk", "OK")
+      : window.t("diag.statusFailed", "Failed");
+
+    const kind = document.createElement("span");
+    kind.className = "diagnostics-kind";
+    kind.textContent = window.t(DIAGNOSTIC_OPERATION_KEYS[entry.operation] || "diag.operationOther", entry.operation || "");
+
+    const target = document.createElement("span");
+    target.className = "diagnostics-target";
+    target.textContent = diagnosticsTargetLabel(entry);
+
+    const time = document.createElement("span");
+    time.className = "diagnostics-time";
+    time.textContent = entry.timestamp || "";
+
+    head.append(status, kind, target, time);
+    row.appendChild(head);
+
+    const message = entry.error || (entry.errors && entry.errors.length ? entry.errors[0] : "");
+    if (message) {
+      const text = document.createElement("span");
+      text.className = "diagnostics-message";
+      text.textContent = message;
+      row.appendChild(text);
+    }
+    list.appendChild(row);
+  });
+}
+
+async function createDiagnosticsPackage() {
+  const notice = document.getElementById("diagnosticsNotice");
+  const exportBtn = document.getElementById("btnExportDiagnostics");
+  if (exportBtn) exportBtn.disabled = true;
+  if (notice) {
+    notice.hidden = false;
+    notice.textContent = window.t("diag.exporting", "Writing the diagnostics package…");
+  }
+  try {
+    const res = await fetch("/api/diagnostics/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const data = await res.json();
+    if (data.success) {
+      if (notice) notice.textContent = window.t("diag.exported", "Package ready: {0}").replace("{0}", data.path);
+      showToast(window.t("diag.exportedToast", "Diagnostics package created"), "success");
+      await loadDiagnostics();
+    } else {
+      const message = data.error || window.t("common.unknownError", "Unknown error");
+      if (notice) notice.textContent = message;
+      showToast(message, "error");
+    }
+  } catch (err) {
+    console.error("Failed to write the diagnostics package:", err);
+    showToast(window.t("common.requestFailed", "Request failed: ") + err, "error");
+  } finally {
+    if (exportBtn) exportBtn.disabled = false;
+  }
+}
+
+async function openDiagnosticsFolder() {
+  if (!diagnosticsDirPath) return;
+  try {
+    const res = await fetch("/api/open-folder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: diagnosticsDirPath }),
+    });
+    const data = await res.json();
+    if (!data.success) {
+      showToast(data.error || window.t("common.requestFailed", "Request failed: "), "error");
+    }
+  } catch (err) {
+    console.error("Failed to open the diagnostics folder:", err);
+  }
 }
 
 function setupIdPool() {

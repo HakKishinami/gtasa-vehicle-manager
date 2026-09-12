@@ -1157,6 +1157,7 @@ class DualTrackParser:
         txd_files = []
         fxt_files = []
         txt_files = []
+        archived_source_count = 0
         tuning_dffs = []
 
         for root, dirs, files in os.walk(mod_dir):
@@ -1164,6 +1165,9 @@ class DualTrackParser:
                 f_lower = file.lower()
                 rel_path = os.path.relpath(os.path.join(root, file), mod_dir)
 
+                if f_lower.endswith(".used_source"):
+                    archived_source_count += 1
+                    continue  # Documentation only: never merge or infer vehicles from old source rows.
                 if f_lower.endswith(".dff"):
                     # Check if tuning part
                     is_tuning = any(f_lower.startswith(p) for p in KNOWN_TUNING_PREFIXES) or "tuning" in root.lower()
@@ -1395,6 +1399,8 @@ class DualTrackParser:
             "success": True,
             "mod_name": mod_name,
             "mod_dir": mod_dir,
+            "source_txt_files": [f["path"] for f in txt_files if f["name"].lower().endswith(".txt")],
+            "archived_source_count": archived_source_count,
             "target_model": target_model,
             "is_addon": is_mod_addon,
             "addon_id": addon_id,

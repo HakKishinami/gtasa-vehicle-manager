@@ -279,6 +279,61 @@ test('addon-only packages default to the Addon Cars folder', async () => {
   assert.deepEqual(e.errors, []);
 });
 
+test('an addon package does not offer its own model as a replacement target', async () => {
+  const e = setup();
+  e.run(fs.readFileSync(path.join(web, 'install-assets.js'), 'utf8'));
+  const html = fs.readFileSync(path.join(web, 'index.html'), 'utf8');
+  for (const match of html.matchAll(/\bid="([^"]+)"/g)) e.node(match[1]);
+  // Capture the select before anything renders: e.node() rebuilds the element.
+  const select = e.node('installVehicleSelect');
+  e.run(fs.readFileSync(path.join(web, 'app.js'), 'utf8'));
+  e.run('updatePartitionFolderBar = () => {}; updateModCountBadges = () => {}; resetInspectorView = () => {}; resetFlaDisplay = () => {};');
+  e.node('installStep2', {style:{display:'none'}});
+
+  const zr150 = {
+    target_model: 'zr150',
+    target_vehicles: [{
+      source_model: 'zr150', model: 'zr150', target_model: 'zr150', name: 'ZR-150',
+      proposed_addon_id: 12093,
+      fxt_proposal: {key: 'ZR150', name: 'ZR-150', has_author_fxt: false},
+    }],
+    proposed_folder_name: '1980 Annis ZR-150',
+    detected_author: 'Annis',
+    existing_authors: [],
+    primary_dffs: [], primary_txds: [], tuning_dffs: [], tuning_txds: [],
+    readme_files: [], other_files: [],
+    parsed_config: {},
+    asset_files: {models: [], textures: [], tuning: [], documents: [], other: []},
+    tuning_parts_analysis: [],
+    variant_groups: [],
+    fxt_proposal: {key: 'ZR150', name: 'ZR-150'},
+    addon_id_proposals: {zr150: 12093},
+    addon_name_conflicts: [],
+  };
+  e.run(`vanillaVehicles = [
+      {id: 477, model: 'zr350', name: 'ZR-350', type: 'car'},
+      {id: 445, model: 'admiral', name: 'Admiral', type: 'car'}];
+    appStatus = {data_folder: 'Modded Cars', addon_folder: 'Addon Cars', modloader_folders: ['Modded Cars', 'Addon Cars']};
+    currentInspectData = ${JSON.stringify(zr150)};
+    renderInstallStep2(currentInspectData);`);
+
+  const optionFor = model => select.options.find(o => o.value === model);
+  assert.ok(optionFor('zr150'), 'the package model must stay representable in the select');
+  assert.equal(optionFor('zr150').hidden, false, 'an addon package offers its own model while installing as an addon');
+
+  // Converting the package into a replacement, then searching for its model.
+  e.run("document.getElementById('installVehicleSelect').value = 'admiral'; setInstallMode('replace');");
+  e.run("vehiclePickerSearch = 'zr'; applyVehiclePickerFilter();");
+  assert.equal(optionFor('zr150').hidden, true,
+    'a replacement install must not offer the package model as a target');
+  assert.equal(optionFor('zr350').hidden, false, 'vanilla matches keep showing');
+
+  // Back to addon mode: the package model is a legal target again.
+  e.run("setInstallMode('addon'); vehiclePickerSearch = 'zr'; applyVehiclePickerFilter();");
+  assert.equal(optionFor('zr150').hidden, false);
+  assert.deepEqual(e.errors, []);
+});
+
 test('mod cards show a vehicle-type icon tile', async () => {
   const e = setup();
   const html = fs.readFileSync(path.join(web, 'index.html'), 'utf8');

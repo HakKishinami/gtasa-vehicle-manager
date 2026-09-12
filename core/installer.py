@@ -23,6 +23,7 @@ from .id_manager import IdManager
 from .vanilla_data import VANILLA_VEHICLES, MODEL_TO_ID, TUNING_PREFIX_INFO
 from .backup_manager import BackupManager
 from .fxt_installer import deploy_fxt
+from .source_documents import archive_used_sources
 from .seven_zip import (
     find_7zip,
     extract_with_7zip,
@@ -1126,6 +1127,8 @@ class ModInstaller:
         mod_dest_dir = dest_dirs_ordered[0]
 
         copied_files = []
+        copied_source_txt = []
+        copy_errors = []
         applied_configs = []
 
         # 1. Copy Model & Texture Files with Collision Prevention
@@ -1373,13 +1376,18 @@ class ModInstaller:
             dest_file = os.path.join(_ddir, dest_name)
             try:
                 shutil.copy2(src_file, dest_file)
+                if dest_name.lower().endswith(".txt"):
+                    copied_source_txt.append(dest_file)
                 if multi_dir:
                     copied_files.append(f"{os.path.basename(_ddir)}/{dest_name}")
                 else:
                     copied_files.append(dest_name)
                 used_dest[dest_key] = (rel, src_file)
             except Exception as e:
-                print(f"Error copying {src_file}: {e}")
+                copy_errors.append(f"Failed to copy {rel}: {e}")
+
+        if copy_errors:
+            return {"success": False, "error": "; ".join(copy_errors), "errors": copy_errors}
 
         # 2. Resolve original IDE name keys before applying user overrides.
         # Use only selected source files (the same exclusion/variant filters as
@@ -1823,6 +1831,26 @@ class ModInstaller:
                 _kept = [d for d in _ide_entries
                          if d and (d.get("model_name") or "").lower() in MODEL_TO_ID]
                 mod_info["parsed"]["ide"] = _kept + _final_ide
+
+                # Converted addon vehicles (addon source -> vanilla target):
+                # the target keeps its identity columns (ID/model/txd/type/
+                # handling/game-name) but adopts the mod's behavioral columns
+                # (anims, class, frequency, flags, comprules, wheel id/scale/
+                # group) — the converted model geometry was authored against
+                # them, and keeping the vanilla values would misfit it (e.g.
+                # wrong wheel scale).
+                _conversion_ide = {}
+                for _v in vehicles:
+                    _sm = (_v.get("source_model") or "").lower()
+                    _tm = (_v.get("target_model") or "").lower()
+                    if not _sm or _sm in MODEL_TO_ID or not _tm or _tm not in MODEL_TO_ID or _sm == _tm:
+                        continue
+                    _m_ide = next((d for d in _ide_entries
+                                   if d and (d.get("model_name") or "").lower() == _sm and d.get("raw")), None)
+                    if _m_ide is not None:
+                        _conversion_ide[_tm] = _m_ide
+                if _conversion_ide:
+                    mod_info["conversion_ide"] = _conversion_ide
             except Exception as _ide_exc:
                 variant_warnings.append(f"Failed to register new vehicle in vehicles.ide: {_ide_exc}")
 
@@ -1885,8 +1913,59 @@ class ModInstaller:
                             merge_res["success"] = False
                             merge_res.setdefault("errors", []).append(result.get("error", "Failed to update IDE reference for FXT key"))
 
+                # Deploy merged IDE lines for converted addon vehicles: the
+                # target's identity columns with the mod's behavioral columns
+                # (see conversion_ide above).
+                for _tm, _m_ide in (mod_info.get("conversion_ide") or {}).items():
+                    _active = self.merger.get_vehicle_active_configs(_tm).get("vehicles_ide")
+                    if not _active or not _active.get("raw"):
+                        merge_res["success"] = False
+                        merge_res.setdefault("errors", []).append(f"Cannot merge IDE data for {_tm.upper()}: missing vanilla IDE definition")
+                        continue
+                    _t_tokens = [t.strip() for t in _active["raw"].split(",")]
+                    _m_tokens = [t.strip() for t in (_m_ide.get("raw") or "").split(",")]
+                    if len(_t_tokens) < 6:
+                        merge_res["success"] = False
+                        merge_res.setdefault("errors", []).append(f"Cannot merge IDE data for {_tm.upper()}: malformed vanilla IDE line")
+                        continue
+                    _merged = _t_tokens[:6] + _m_tokens[6:]
+                    if _merged == _t_tokens:
+                        continue
+                    _res_ide = self.merger.save_vehicle_config(_tm, "vehicles_ide", ", ".join(_merged))
+                    if _res_ide.get("success"):
+                        if "vehicles.ide" not in applied_configs:
+                            applied_configs.append("vehicles.ide")
+                    else:
+                        merge_res["success"] = False
+                        merge_res.setdefault("errors", []).append(f"Failed to merge IDE data for {_tm.upper()}: {_res_ide.get('error', '')}")
+
         else:
             merge_res = {"success": True, "applied_files": [], "errors": []}
+
+        # Archive only documents copied by this installation. A deselected
+        # option is deliberately excluded, so its original TXT must not let
+        # ModLoader silently apply it. Archives remain read-only source material.
+        source_archive = {"success": True, "files": [], "errors": []}
+        if merge_res.get("success") and mod_info.get("success"):
+            source_archive = archive_used_sources(copied_source_txt, {
+                "operation": "install",
+                "vehicles": [{k: v.get(k) for k in (
+                    "source_model", "target_model", "merge_handling", "merge_carcols",
+                    "merge_carmods", "merge_fla", "skip")} for v in all_vehicles],
+                "excluded_files": list(raw_excluded),
+                "applied_configs": list(applied_configs),
+            })
+            if not source_archive["success"]:
+                merge_res["success"] = False
+                merge_res.setdefault("errors", []).extend(source_archive["errors"])
+            else:
+                # Keep the returned installation file list consistent with disk.
+                renamed = dict(zip(copied_source_txt, source_archive["files"]))
+                for old_path, new_path in renamed.items():
+                    prefix = os.path.basename(os.path.dirname(old_path)) + "/" if multi_dir else ""
+                    old_label = prefix + os.path.basename(old_path)
+                    if old_label in copied_files:
+                        copied_files[copied_files.index(old_label)] = prefix + os.path.basename(new_path)
 
         # Clean up temp staging directory if was extracted from archive
         if params.get("is_temp_extracted", False):
@@ -1912,6 +1991,7 @@ class ModInstaller:
             "copied_files_count": len(copied_files),
             "copied_files": copied_files,
             "applied_configs": applied_configs,
+            "archived_sources": source_archive["files"],
             "warnings": variant_warnings,
             "errors": merge_res.get("errors", []),
             "error": "; ".join(merge_res.get("errors", [])) if not merge_res.get("success") and merge_res.get("errors") else ""
