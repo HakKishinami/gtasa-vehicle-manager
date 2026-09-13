@@ -78,7 +78,8 @@ test('the baseline panel and the notice modal expose the config guard', async ()
   assert.match(html, /id="foreignConfigsList"/);
   assert.match(html, /<div class="modal" id="foreignConfigsModal">/);
   assert.match(html, /id="foreignConfigsModalList"/);
-  assert.match(html, /id="closeForeignConfigsModalBtn"/);
+  assert.match(html, /id="chkForeignConfigsDontRemind"/);
+  assert.match(html, /id="btnForeignConfigsGotIt"/);
 
   const source = fs.readFileSync(path.join(web, 'app.js'), 'utf8');
   assert.match(source, /fetch\("\/api\/foreign-configs\/scan"/);
@@ -91,8 +92,8 @@ test('i18n defines the config guard copy in English', async () => {
   const e = setup();
   const keys = ['foreign.cardTitle', 'foreign.badgeChecking', 'foreign.badgeCount', 'foreign.badgeNone',
     'foreign.cardHint', 'foreign.none', 'foreign.stateDisabledNow', 'foreign.stateDisabled',
-    'foreign.btnOpenFolder', 'foreign.openFailed',
-    'foreign.modalTitle', 'foreign.modalDesc', 'foreign.modalIntro', 'foreign.btnClose', 'foreign.loadFailed'];
+    'foreign.btnOpenFolder', 'foreign.openFailed', 'foreign.chkDontRemind', 'foreign.btnGotIt',
+    'foreign.modalTitle', 'foreign.modalDesc', 'foreign.modalIntro', 'foreign.loadFailed'];
   for (const key of keys) {
     const value = e.run(`window.I18N_DICTIONARY.en[${JSON.stringify(key)}]`);
     assert.equal(typeof value, 'string', key + ' must be translated');
@@ -106,6 +107,7 @@ test('the guard lists what it disabled and warns once per session', async () => 
   const payload = {
     success: true,
     checked: true,
+    notify: true,
     disabled: [{name: 'handling.cfg', path: 'E:\\Game\\modloader\\Proper Fixes\\Vehicles Config Fix\\handling.cfg',
                 disabled_path: 'E:\\Game\\modloader\\Proper Fixes\\Vehicles Config Fix\\handling.cfg.vmm-disabled'}],
     already_disabled: [{name: 'vehicles.ide.vmm-disabled', path: 'E:\\Game\\modloader\\Mod\\vehicles.ide.vmm-disabled'}],
@@ -119,13 +121,14 @@ test('the guard lists what it disabled and warns once per session', async () => 
   assert.equal(e.node('foreignConfigsModal').classList.contains('active'), true);
 
   const modalRows = e.node('foreignConfigsModalList').children;
-  assert.equal(modalRows.length, 1);
+  assert.equal(modalRows.length, 2, 'the notice lists what was disabled now and earlier');
   const head = modalRows[0].children[0];
   assert.equal(head.children[0].textContent, 'handling.cfg', 'the file name is its own label');
   assert.equal(head.children[1].textContent, 'just disabled', 'the state is a separate badge');
   assert.equal(head.children[2].textContent, '📂 Open folder');
   assert.equal(modalRows[0].children[1].textContent,
     'E:\\Game\\modloader\\Proper Fixes\\Vehicles Config Fix\\handling.cfg.vmm-disabled');
+  assert.doesNotMatch(modalRows[1].className, /foreign-row-new/);
 
   // The locate button opens the folder the disabled file lives in.
   head.children[2].click();
@@ -142,16 +145,62 @@ test('the guard lists what it disabled and warns once per session', async () => 
   assert.equal(listRows[1].children[0].children[1].textContent, 'disabled earlier');
   assert.equal(e.node('foreignConfigsBadge').textContent, '2 disabled');
 
-  // A later run in the same session must not reopen the modal.
+  // A later run in the same session must not reopen the notice.
+  e.node('foreignConfigsModal').classList.remove('active');
   await e.run('runForeignConfigGuard()');
-  assert.equal(e.node('foreignConfigsModal').classList.contains('active'), true);
+  assert.equal(e.node('foreignConfigsModal').classList.contains('active'), false);
   assert.equal(e.errors.length, 0);
+});
+
+test('copies disabled by an earlier run are explained until acknowledged', async () => {
+  const e = setup();
+  e.replies.set('/api/foreign-configs/scan', {
+    success: true, checked: true, notify: true, disabled: [],
+    already_disabled: [{name: 'carcols.dat.vmm-disabled',
+                        path: 'E:\\Game\\modloader\\Proper Fixes\\Vehicles Config Fix\\carcols.dat.vmm-disabled'}],
+    errors: [],
+  });
+  await e.run('runForeignConfigGuard()');
+  assert.equal(e.node('foreignConfigsModal').classList.contains('active'), true,
+    'a run that only found earlier copies still explains them');
+  const rows = e.node('foreignConfigsModalList').children;
+  assert.equal(rows.length, 1);
+  assert.doesNotMatch(rows[0].className, /foreign-row-new/);
+  assert.equal(e.node('chkForeignConfigsDontRemind').checked, false);
+});
+
+test('got it stores the acknowledgement for this game folder', async () => {
+  const e = setup();
+  e.replies.set('/api/foreign-configs/scan', {
+    success: true, checked: true, notify: true,
+    disabled: [{name: 'carmods.dat', path: 'p', disabled_path: 'p.vmm-disabled'}],
+    already_disabled: [], errors: [],
+  });
+  await e.run('runForeignConfigGuard()');
+  await e.run('acknowledgeForeignConfigs()');
+  const ack = e.requests[e.requests.length - 1];
+  assert.equal(ack.url, '/api/foreign-configs/ack');
+  assert.equal(ack.options.method, 'POST');
+  assert.deepEqual(JSON.parse(ack.options.body), {never: false});
+  assert.equal(e.node('foreignConfigsModal').classList.contains('active'), false);
+});
+
+test('the reminder checkbox is sent as a permanent dismissal', async () => {
+  const e = setup();
+  e.replies.set('/api/foreign-configs/scan', {
+    success: true, checked: true, notify: true, disabled: [],
+    already_disabled: [{name: 'shopping.dat.vmm-disabled', path: 'q'}], errors: [],
+  });
+  await e.run('runForeignConfigGuard()');
+  e.node('chkForeignConfigsDontRemind').checked = true;
+  await e.run('acknowledgeForeignConfigs()');
+  assert.deepEqual(JSON.parse(e.requests[e.requests.length - 1].options.body), {never: true});
 });
 
 test('an empty result reports the clear state', async () => {
   const e = setup();
   e.replies.set('/api/foreign-configs/scan',
-    {success: true, checked: true, disabled: [], already_disabled: [], errors: []});
+    {success: true, checked: true, notify: false, disabled: [], already_disabled: [], errors: []});
   await e.run('runForeignConfigGuard()');
   assert.equal(e.node('foreignConfigsModal').classList.contains('active'), false);
   assert.equal(e.node('foreignConfigsBadge').textContent, 'None');

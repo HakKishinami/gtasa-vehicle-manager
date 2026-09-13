@@ -334,6 +334,18 @@ test('an addon package does not offer its own model as a replacement target', as
   assert.deepEqual(e.errors, []);
 });
 
+test('every navigation tab switches to a panel', async () => {
+  const html = fs.readFileSync(path.join(web, 'index.html'), 'utf8');
+  const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]));
+  const tabs = [...html.matchAll(/<button class="tab-btn[^"]*"([^>]*)>/g)];
+  assert.ok(tabs.length >= 5, 'the five workspace tabs stay in the navigation');
+  for (const tab of tabs) {
+    const target = tab[1].match(/data-tab="([^"]+)"/);
+    assert.ok(target, `a tab button has no data-tab: ${tab[0]}`);
+    assert.ok(ids.has(target[1]), `tab target ${target[1]} has no panel`);
+  }
+});
+
 test('mod cards show a vehicle-type icon tile', async () => {
   const e = setup();
   const html = fs.readFileSync(path.join(web, 'index.html'), 'utf8');

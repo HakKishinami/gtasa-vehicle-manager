@@ -3997,6 +3997,15 @@ pre {
   padding: 10px 12px;
 }
 .foreign-row-new { border-color: rgba(251, 191, 36, 0.4); }
+.foreign-remember {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
 .foreign-row-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .foreign-row-title { font-size: 13px; font-weight: 600; color: var(--text-bright); }
 .foreign-open { margin-left: auto; }

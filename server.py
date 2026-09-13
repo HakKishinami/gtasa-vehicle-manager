@@ -113,7 +113,9 @@ def load_saved_config() -> dict:
         "is_configured": False,
         "language": I18N_DEFAULT,
         "default_language": I18N_DEFAULT,
-        "card_density": DEFAULT_CARD_DENSITY
+        "card_density": DEFAULT_CARD_DENSITY,
+        "foreign_configs_ack_path": "",
+        "foreign_configs_dismissed": False
     }
     if os.path.exists(CONFIG_PATH):
         try:
@@ -143,6 +145,10 @@ def load_saved_config() -> dict:
                         cfg["mod_folder"] = mf.strip()
                     if "dismiss_fla_warning" in saved:
                         cfg["dismiss_fla_warning"] = bool(saved["dismiss_fla_warning"])
+                    if "foreign_configs_ack_path" in saved:
+                        cfg["foreign_configs_ack_path"] = str(saved["foreign_configs_ack_path"] or "")
+                    if "foreign_configs_dismissed" in saved:
+                        cfg["foreign_configs_dismissed"] = bool(saved["foreign_configs_dismissed"])
                     if "language" in saved and is_supported_language(saved["language"]):
                         cfg["language"] = normalize_language(saved["language"])
                     if "default_language" in saved and is_supported_language(saved["default_language"]):
@@ -163,7 +169,8 @@ def load_saved_config() -> dict:
 def save_config(game_path: str = None, data_folder: str = None, addon_folder: str = None, mod_folder: str = None,
                 remember_default_path: bool = None, dismiss_fla_warning: bool = None,
                 is_configured: bool = None, language: str = None, default_language: str = None,
-                card_density: str = None):
+                card_density: str = None, foreign_configs_ack_path: str = None,
+                foreign_configs_dismissed: bool = None):
     """Save config to config.json. Only persists game_path if remember_default_path is True."""
     try:
         cfg = load_saved_config()
@@ -202,6 +209,10 @@ def save_config(game_path: str = None, data_folder: str = None, addon_folder: st
             cfg["default_language"] = normalize_language(default_language)
         if card_density is not None:
             cfg["card_density"] = normalize_card_density(card_density)
+        if foreign_configs_ack_path is not None:
+            cfg["foreign_configs_ack_path"] = foreign_configs_ack_path
+        if foreign_configs_dismissed is not None:
+            cfg["foreign_configs_dismissed"] = bool(foreign_configs_dismissed)
 
         save_data = {
             "game_path": cfg.get("game_path", ""),
@@ -213,11 +224,18 @@ def save_config(game_path: str = None, data_folder: str = None, addon_folder: st
             "is_configured": cfg.get("is_configured", False),
             "language": cfg.get("language", I18N_DEFAULT),
             "default_language": cfg.get("default_language", I18N_DEFAULT),
-            "card_density": cfg.get("card_density", DEFAULT_CARD_DENSITY)
+            "card_density": cfg.get("card_density", DEFAULT_CARD_DENSITY),
+            "foreign_configs_ack_path": cfg.get("foreign_configs_ack_path", ""),
+            "foreign_configs_dismissed": cfg.get("foreign_configs_dismissed", False)
         }
         write_text_atomic(CONFIG_PATH, json.dumps(save_data, ensure_ascii=False, indent=2))
     except Exception as e:
         print("Error saving config:", e)
+
+
+def _normalized_path(path: str) -> str:
+    clean = (path or "").strip()
+    return os.path.normcase(os.path.normpath(clean)) if clean else ""
 
 def browse_folder_native(initial_dir: str = "", title: str = "", lang: str = "") -> str:
     """Open a native Windows directory picker dialog."""
@@ -272,6 +290,8 @@ DATA_FOLDER = _init_cfg["data_folder"]
 ADDON_FOLDER = _init_cfg.get("addon_folder", DEFAULT_ADDON_FOLDER)
 MOD_FOLDER = _init_cfg["mod_folder"]
 DISMISS_FLA_WARNING = bool(_init_cfg.get("dismiss_fla_warning", False))
+FOREIGN_CONFIGS_ACK_PATH = _normalized_path(_init_cfg.get("foreign_configs_ack_path", ""))
+FOREIGN_CONFIGS_DISMISSED = bool(_init_cfg.get("foreign_configs_dismissed", False))
 CANDIDATE_PATH = _init_cfg.get("candidate_path", "")
 LANGUAGE = normalize_language(_init_cfg.get("language", _init_cfg.get("default_language", I18N_DEFAULT)))
 DEFAULT_LANGUAGE = normalize_language(_init_cfg.get("default_language", I18N_DEFAULT))
@@ -355,8 +375,24 @@ def set_active_game_path(new_path: str, new_data_folder: str = None, new_addon_f
 
 
 FOREIGN_CONFIGS_STATE: Dict[str, Any] = {
-    "checked": False, "disabled": [], "already_disabled": [], "errors": [],
+    "checked": False, "disabled": [], "already_disabled": [], "errors": [], "notify": False,
 }
+
+
+def foreign_configs_notice_needed(state: Dict[str, Any]) -> bool:
+    """Whether the UI should explain the guard.
+
+    A file renamed in this run is always worth a notice - the user's files
+    changed. Copies disabled by an earlier run are only worth one notice per
+    game folder, and never after "don't show this again".
+    """
+    if state.get("disabled"):
+        return True
+    if not state.get("already_disabled"):
+        return False
+    if FOREIGN_CONFIGS_DISMISSED:
+        return False
+    return _normalized_path(GAME_PATH) != FOREIGN_CONFIGS_ACK_PATH
 
 
 def refresh_foreign_configs() -> Dict[str, Any]:
@@ -364,6 +400,7 @@ def refresh_foreign_configs() -> Dict[str, Any]:
     global FOREIGN_CONFIGS_STATE
     result = foreign_configs.scan_and_disable(GAME_PATH, shadow_dir)
     FOREIGN_CONFIGS_STATE = {"checked": True, **result}
+    FOREIGN_CONFIGS_STATE["notify"] = foreign_configs_notice_needed(FOREIGN_CONFIGS_STATE)
     if result["disabled"] or result["errors"]:
         record_operation(
             "disable_foreign_configs",
@@ -516,6 +553,8 @@ class ModManagerHandler(BaseHTTPRequestHandler):
                 "should_prompt_path": SHOULD_PROMPT_PATH,
                 "remember_default_path": REMEMBER_DEFAULT_PATH,
                 "dismiss_fla_warning": DISMISS_FLA_WARNING,
+                "foreign_configs_ack_path": FOREIGN_CONFIGS_ACK_PATH,
+                "foreign_configs_dismissed": FOREIGN_CONFIGS_DISMISSED,
                 "candidate_path": CANDIDATE_PATH,
                 "language": LANGUAGE,
                 "default_language": DEFAULT_LANGUAGE,
@@ -1151,7 +1190,11 @@ class ModManagerHandler(BaseHTTPRequestHandler):
                 "baseline": baseline_mgr.get_status(),
                 "fla": fla_mgr.get_fla_status(),
                 "remember_default_path": REMEMBER_DEFAULT_PATH,
-                "should_prompt_path": SHOULD_PROMPT_PATH
+                "should_prompt_path": SHOULD_PROMPT_PATH,
+                # set_active_game_path already ran the guard; handing the result
+                # back keeps the UI from scanning the tree a second time (and
+                # keeps the notice labelled as a fresh rename).
+                "foreign_configs": FOREIGN_CONFIGS_STATE
             })
             return
 
@@ -1312,6 +1355,20 @@ class ModManagerHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/foreign-configs/scan":
             self._send_json({"success": True, **refresh_foreign_configs()})
+            return
+
+        elif path == "/api/foreign-configs/ack":
+            global FOREIGN_CONFIGS_ACK_PATH, FOREIGN_CONFIGS_DISMISSED
+            never = bool(body.get("never", False))
+            FOREIGN_CONFIGS_ACK_PATH = _normalized_path(GAME_PATH)
+            if never:
+                FOREIGN_CONFIGS_DISMISSED = True
+            save_config(foreign_configs_ack_path=FOREIGN_CONFIGS_ACK_PATH,
+                        foreign_configs_dismissed=True if never else None)
+            # The notice has been shown and dismissed; a later scan decides
+            # again from the state on disk.
+            FOREIGN_CONFIGS_STATE["notify"] = False
+            self._send_json({"success": True, "notify": False})
             return
 
         elif path == "/api/mods/delete":

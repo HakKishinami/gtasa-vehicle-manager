@@ -3692,10 +3692,19 @@ function setupModals() {
           discardInspectorContext();
           await loadSystemStatus();
           await loadMods();
-          // A different game or shadow folder changes which config copies count
-          // as this manager's own.
+          // A different game folder can contain competing config copies of its
+          // own. The response already carries the guard's result, so the tree is
+          // not scanned twice and a fresh rename keeps its "just disabled" label.
           foreignConfigsNotified = false;
-          await runForeignConfigGuard();
+          if (data.foreign_configs) {
+            renderForeignConfigs(data.foreign_configs);
+            if (data.foreign_configs.notify && !foreignConfigsNotified) {
+              foreignConfigsNotified = true;
+              openForeignConfigsModal(data.foreign_configs);
+            }
+          } else {
+            await runForeignConfigGuard();
+          }
         } else {
           if (pathAlert) {
             pathAlert.className = "alert-box warning";
@@ -7079,12 +7088,12 @@ let foreignConfigsNotified = false;
 function setupForeignConfigs() {
   const modal = document.getElementById("foreignConfigsModal");
   const closeBtn = document.getElementById("closeForeignConfigsModal");
-  const closeBtnFooter = document.getElementById("closeForeignConfigsModalBtn");
+  const gotItBtn = document.getElementById("btnForeignConfigsGotIt");
   const hideModal = () => {
     if (modal) modal.classList.remove("active");
   };
   if (closeBtn) closeBtn.addEventListener("click", hideModal);
-  if (closeBtnFooter) closeBtnFooter.addEventListener("click", hideModal);
+  if (gotItBtn) gotItBtn.addEventListener("click", acknowledgeForeignConfigs);
 }
 
 // Competing copies of handling.cfg / carcols.dat / carmods.dat / vehicles.ide /
@@ -7103,9 +7112,12 @@ async function runForeignConfigGuard() {
       return;
     }
     renderForeignConfigs(data);
-    if ((data.disabled || []).length && !foreignConfigsNotified) {
+    // The backend decides whether this run is worth a notice: a rename that
+    // just happened always is, copies disabled by an earlier run only once per
+    // game folder (and never after "don't show this again").
+    if (data.notify && !foreignConfigsNotified) {
       foreignConfigsNotified = true;
-      openForeignConfigsModal(data.disabled);
+      openForeignConfigsModal(data);
     }
   } catch (err) {
     console.error("Failed to check for competing config copies:", err);
@@ -7196,14 +7208,35 @@ function renderForeignConfigs(data) {
   }
 }
 
-function openForeignConfigsModal(entries) {
+function openForeignConfigsModal(data) {
+  const freshlyDisabled = (data && data.disabled) || [];
+  const earlier = (data && data.already_disabled) || [];
   const list = document.getElementById("foreignConfigsModalList");
   if (list) {
     list.replaceChildren();
-    entries.forEach(entry => list.appendChild(foreignConfigRow(entry, true)));
+    freshlyDisabled.forEach(entry => list.appendChild(foreignConfigRow(entry, true)));
+    earlier.forEach(entry => list.appendChild(foreignConfigRow(entry, false)));
   }
+  const remember = document.getElementById("chkForeignConfigsDontRemind");
+  if (remember) remember.checked = false;
   const modal = document.getElementById("foreignConfigsModal");
   if (modal) modal.classList.add("active");
+}
+
+async function acknowledgeForeignConfigs() {
+  const remember = document.getElementById("chkForeignConfigsDontRemind");
+  const modal = document.getElementById("foreignConfigsModal");
+  if (modal) modal.classList.remove("active");
+  foreignConfigsNotified = true;
+  try {
+    await fetch("/api/foreign-configs/ack", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ never: !!(remember && remember.checked) }),
+    });
+  } catch (err) {
+    console.error("Failed to store the config-guard acknowledgement:", err);
+  }
 }
 
 function setupIdPool() {
@@ -7211,7 +7244,6 @@ function setupIdPool() {
   const closeBtn = document.getElementById("closeIdPoolModal");
   const closeBtnFooter = document.getElementById("closeIdPoolModalBtn");
   const btnHeader = document.getElementById("btnOpenIdPoolHeader");
-  const btnNav = document.getElementById("btnNavOpenIdPool");
 
   const hideModal = () => {
     if (modal) modal.classList.remove("active");
@@ -7220,7 +7252,6 @@ function setupIdPool() {
   if (closeBtnFooter) closeBtnFooter.addEventListener("click", hideModal);
 
   if (btnHeader) btnHeader.addEventListener("click", openIdPoolModal);
-  if (btnNav) btnNav.addEventListener("click", openIdPoolModal);
 
   // Probe button & Enter key
   const probeBtn = document.getElementById("btnProbeId");
