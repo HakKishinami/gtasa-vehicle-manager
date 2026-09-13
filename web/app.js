@@ -4765,6 +4765,12 @@ function setupInstaller() {
         if (data.success) {
           showToast(loc({ en: `Mod ${subfolder} successfully installed into ${targetCategory}!` }), "success");
           renderInstallResult(data);
+          // Identity columns the package declared but the target overrides get
+          // their own dialog: silently ignoring them is what made the
+          // vehicles.ide merge look like it never ran.
+          if (Array.isArray(data.ide_notes) && data.ide_notes.length) {
+            showAppAlert(window.t("install.ideNotesTitle", "vehicles.ide: package data was adjusted") + "\n\n" + data.ide_notes.join("\n"));
+          }
           loadSystemStatus();
           loadMods();
         } else {
@@ -5420,6 +5426,35 @@ function showAppConfirm(message) {
     okBtn.addEventListener("click", onOk);
     cancelBtn.addEventListener("click", onCancel);
     if (closeBtn) closeBtn.addEventListener("click", onCancel);
+    modal.classList.add("active");
+  });
+}
+
+// Promise-based themed alert dialog: the confirm dialog's look with a single
+// acknowledgement button, so a warning cannot be missed in a toast.
+function showAppAlert(message) {
+  return new Promise(resolve => {
+    const modal = document.getElementById("appAlertModal");
+    const msgEl = document.getElementById("appAlertMessage");
+    const okBtn = document.getElementById("appAlertOk");
+    const closeBtn = document.getElementById("appAlertClose");
+    if (!modal || !okBtn) {
+      window.alert(message);
+      resolve();
+      return;
+    }
+    if (msgEl) msgEl.textContent = message;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      modal.classList.remove("active");
+      okBtn.removeEventListener("click", finish);
+      if (closeBtn) closeBtn.removeEventListener("click", finish);
+      resolve();
+    };
+    okBtn.addEventListener("click", finish);
+    if (closeBtn) closeBtn.addEventListener("click", finish);
     modal.classList.add("active");
   });
 }

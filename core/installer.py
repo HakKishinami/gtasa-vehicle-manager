@@ -171,6 +171,31 @@ def resolve_txd_model_info(
 _DOC_TEXT_EXTENSIONS = {".txt", ".readme", ".md", ".me", ".log", ".cfg", ".dat", ".ide", ".ini"}
 
 
+def _ide_identity_notes(model: str, target_tokens: List[str], author_tokens: List[str],
+                        source_model: str = "") -> List[str]:
+    """Identity columns the package declared but the target's line overrides.
+
+    Only overrides that can surprise the user are reported: a real numeric model
+    ID (the vehicle must not move to another slot) and a handling reference that
+    points at someone else's identifier (the package's own handling line is
+    re-keyed to the target, so a foreign reference would silently not apply).
+    """
+    notes: List[str] = []
+    if not target_tokens or not author_tokens:
+        return notes
+    upper = model.upper()
+    declared_id, kept_id = author_tokens[0].strip(), target_tokens[0].strip()
+    # Placeholders such as "ID" or a blank column are not a declared slot.
+    if declared_id.isdigit() and kept_id and declared_id != kept_id:
+        notes.append(f"vehicles.ide: {upper} keeps ID {kept_id}; the package declared ID {declared_id}")
+    if len(author_tokens) >= 5 and len(target_tokens) >= 5:
+        declared_h, kept_h = author_tokens[4].strip(), target_tokens[4].strip()
+        own = declared_h.upper() in {upper, (source_model or "").upper()}
+        if declared_h and kept_h and not own and declared_h.upper() != kept_h.upper():
+            notes.append(f"vehicles.ide: {upper} keeps handling '{kept_h}'; the package declared '{declared_h}'")
+    return notes
+
+
 def _doc_referenced_models(parser: DualTrackParser, path: str) -> set:
     """Model names a config document declares (vehicles.ide / handling /
     carcols / carmods blocks) so the installer can route it to its vehicle."""
@@ -1359,6 +1384,7 @@ class ModInstaller:
 
         used_dest = {}
         variant_warnings = []
+        ide_notes = []
         multi_dir = len(dest_dirs_ordered) > 1
         for rel, src_file, dest_name, _gkey, _vidx_task in copy_tasks:
             if dest_name.lower().endswith(".fxt"):
@@ -1832,18 +1858,20 @@ class ModInstaller:
                          if d and (d.get("model_name") or "").lower() in MODEL_TO_ID]
                 mod_info["parsed"]["ide"] = _kept + _final_ide
 
-                # Converted addon vehicles (addon source -> vanilla target):
-                # the target keeps its identity columns (ID/model/txd/type/
-                # handling/game-name) but adopts the mod's behavioral columns
-                # (anims, class, frequency, flags, comprules, wheel id/scale/
-                # group) — the converted model geometry was authored against
-                # them, and keeping the vanilla values would misfit it (e.g.
-                # wrong wheel scale).
+                # Packages that ship a vehicles.ide line for the model they
+                # provide: converted addons (addon source -> vanilla target) and
+                # plain replacements, including a same-name replacement that
+                # only changes behavioral columns. Either way the target keeps
+                # its identity columns (ID/model/txd/type/handling/game-name)
+                # but adopts the mod's behavioral columns (anims, class,
+                # frequency, flags, comprules, wheel id/scale/group) — the
+                # model geometry was authored against them, and keeping the
+                # vanilla values would misfit it (e.g. wrong wheel scale).
                 _conversion_ide = {}
                 for _v in vehicles:
                     _sm = (_v.get("source_model") or "").lower()
                     _tm = (_v.get("target_model") or "").lower()
-                    if not _sm or _sm in MODEL_TO_ID or not _tm or _tm not in MODEL_TO_ID or _sm == _tm:
+                    if not _sm or not _tm or _tm not in MODEL_TO_ID:
                         continue
                     _m_ide = next((d for d in _ide_entries
                                    if d and (d.get("model_name") or "").lower() == _sm and d.get("raw")), None)
@@ -1913,9 +1941,8 @@ class ModInstaller:
                             merge_res["success"] = False
                             merge_res.setdefault("errors", []).append(result.get("error", "Failed to update IDE reference for FXT key"))
 
-                # Deploy merged IDE lines for converted addon vehicles: the
-                # target's identity columns with the mod's behavioral columns
-                # (see conversion_ide above).
+                # Deploy merged IDE lines: the target's identity columns with the
+                # mod's behavioral columns (see conversion_ide above).
                 for _tm, _m_ide in (mod_info.get("conversion_ide") or {}).items():
                     _active = self.merger.get_vehicle_active_configs(_tm).get("vehicles_ide")
                     if not _active or not _active.get("raw"):
@@ -1923,11 +1950,21 @@ class ModInstaller:
                         merge_res.setdefault("errors", []).append(f"Cannot merge IDE data for {_tm.upper()}: missing vanilla IDE definition")
                         continue
                     _t_tokens = [t.strip() for t in _active["raw"].split(",")]
-                    _m_tokens = [t.strip() for t in (_m_ide.get("raw") or "").split(",")]
+                    _m_tokens = [t.strip() for t in ((_m_ide.get("raw") or "").split(","))]
                     if len(_t_tokens) < 6:
                         merge_res["success"] = False
                         merge_res.setdefault("errors", []).append(f"Cannot merge IDE data for {_tm.upper()}: malformed vanilla IDE line")
                         continue
+                    if len(_m_tokens) <= 6:
+                        # Identity columns only: nothing behavioral to adopt, and
+                        # writing it would truncate the target's line.
+                        continue
+                    _identity_notes = _ide_identity_notes(
+                        _tm, _t_tokens, _m_tokens,
+                        source_model=str(_m_ide.get("model_name") or ""))
+                    for _note in _identity_notes:
+                        variant_warnings.append(_note)
+                        ide_notes.append(_note)
                     _merged = _t_tokens[:6] + _m_tokens[6:]
                     if _merged == _t_tokens:
                         continue
@@ -1993,6 +2030,7 @@ class ModInstaller:
             "applied_configs": applied_configs,
             "archived_sources": source_archive["files"],
             "warnings": variant_warnings,
+            "ide_notes": ide_notes,
             "errors": merge_res.get("errors", []),
             "error": "; ".join(merge_res.get("errors", [])) if not merge_res.get("success") and merge_res.get("errors") else ""
         }

@@ -2287,6 +2287,105 @@ class AddonToReplaceConversionRegression(unittest.TestCase):
         self.assertIn("9999.0", sanchez_line)
 
 
+class ReplacementPackageIdeRegression(unittest.TestCase):
+    """A same-name replacement package that ships its own vehicles.ide line.
+
+    The target keeps its identity columns (ID/model/txd/type/handling/game
+    name) but adopts the package's behavioral columns - the reported case was a
+    package whose class and wheel scale silently never reached the shadow copy.
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="replace_ide_")
+        self.addCleanup(self.temp.cleanup)
+        self.game = Path(self.temp.name) / "game"
+        (self.game / "data").mkdir(parents=True)
+        (self.game / "gta_sa.exe").write_bytes(b"x")
+        (self.game / "data" / "vehicles.ide").write_text(
+            "cars\n"
+            "602, alpha, alpha, car, ALPHA, ALPHA, null, executive, 10, 0, 0, -1, 0.7, 0.7, 0\n"
+            "end\n",
+            encoding="utf-8")
+        (self.game / "data" / "handling.cfg").write_text("; h\n" + handling("ALPHA") + "\n", encoding="utf-8")
+        (self.game / "data" / "carcols.dat").write_text("col\nend\ncar\nalpha, 1, 1\nend\n", encoding="utf-8")
+        (self.game / "data" / "carmods.dat").write_text("mods\nalpha, nto_b_s\nend\nlink\nend\n", encoding="utf-8")
+        (self.game / "data" / "shopping.dat").write_text("section prices\nsection CarMods\nend\nend\n", encoding="utf-8")
+        self.shadow = self.game / "modloader" / "Modded Cars"
+        self.source = Path(self.temp.name) / "src"
+        self.source.mkdir()
+        (self.source / "alpha.dff").write_bytes(b"dff")
+        (self.source / "alpha.txd").write_bytes(b"txd")
+        self.backup = BackupManager(backup_dir=str(Path(self.temp.name) / "backups"), game_dir=str(self.game))
+        self.installer = ModInstaller(str(self.game), "Modded Cars", backup_manager=self.backup)
+
+    def author_config(self, ide_line):
+        (self.source / "alpha_dat.txt").write_text(
+            "vehicles.ide\n" + ide_line + "\n\ncarcols.dat\nalpha, 42, 42\n", encoding="utf-8")
+
+    def payload(self):
+        return {"inspect_dir": str(self.source), "target_category": "Modded Cars",
+                "folder_name": "1992 Bravado Alpha",
+                "vehicles": [{"source_model": "alpha", "target_model": "alpha", "source_type": "car",
+                              "category": "Modded Cars", "generate_fxt": False, "merge_fla": False}]}
+
+    def shadow_alpha_tokens(self):
+        ide = (self.shadow / "vehicles.ide").read_text(encoding="utf-8-sig")
+        lines = [l for l in ide.splitlines() if l.strip().lower().startswith("602,")]
+        self.assertEqual(len(lines), 1)
+        return [t.strip() for t in lines[0].split(",")]
+
+    def test_same_name_replacement_adopts_the_package_behavioral_columns(self):
+        self.author_config("602, alpha, alpha, car, ALPHA, ALPHA, null, normal, 10, 0, 0, -1, 0.78, 0.78, 0")
+        res = self.installer.execute_install(self.payload())
+        self.assertTrue(res["success"], res)
+
+        tokens = self.shadow_alpha_tokens()
+        self.assertEqual(tokens[:6], ["602", "alpha", "alpha", "car", "ALPHA", "ALPHA"])
+        self.assertEqual(tokens[6:], ["null", "normal", "10", "0", "0", "-1", "0.78", "0.78", "0"])
+        self.assertIn("vehicles.ide", res["applied_configs"])
+        # Identity matched, so nothing to warn about.
+        self.assertEqual(res["ide_notes"], [])
+        # The vanilla data/ file is never touched.
+        self.assertIn("executive", (self.game / "data" / "vehicles.ide").read_text(encoding="utf-8-sig"))
+
+    def test_a_foreign_id_and_handling_reference_are_reported(self):
+        self.author_config("13000, alpha, alpha, car, ZR350, ALPHA, null, normal, 10, 0, 0, -1, 0.78, 0.78, 0")
+        res = self.installer.execute_install(self.payload())
+        self.assertTrue(res["success"], res)
+
+        tokens = self.shadow_alpha_tokens()
+        self.assertEqual(tokens[:6], ["602", "alpha", "alpha", "car", "ALPHA", "ALPHA"])
+        self.assertEqual(tokens[6:], ["null", "normal", "10", "0", "0", "-1", "0.78", "0.78", "0"])
+        self.assertEqual(len(res["ide_notes"]), 2)
+        self.assertIn("keeps ID 602", res["ide_notes"][0])
+        self.assertIn("13000", res["ide_notes"][0])
+        self.assertIn("keeps handling 'ALPHA'", res["ide_notes"][1])
+        self.assertIn("ZR350", res["ide_notes"][1])
+        # The notes are part of the install record as well.
+        for note in res["ide_notes"]:
+            self.assertIn(note, res["warnings"])
+
+    def test_a_package_that_declares_its_own_model_and_handling_is_not_reported(self):
+        # Author placeholders ("ID") and the package's own model name stand for
+        # "my own slot/handling line": the installer re-keys both, so warning
+        # about them would be noise.
+        self.author_config("ID, alpha, alpha, car, ALPHA, ALPHA, null, normal, 10, 0, 0, -1, 0.78, 0.78, 0")
+        res = self.installer.execute_install(self.payload())
+        self.assertTrue(res["success"], res)
+        self.assertEqual(res["ide_notes"], [])
+
+    def test_a_package_without_an_ide_line_leaves_the_line_alone(self):
+        (self.source / "alpha_dat.txt").write_text("carcols.dat\nalpha, 42, 42\n", encoding="utf-8")
+        res = self.installer.execute_install(self.payload())
+        self.assertTrue(res["success"], res)
+        # Nothing in this package addresses vehicles.ide, so no shadow copy is
+        # created for it and the vanilla line stays as it is.
+        self.assertNotIn("vehicles.ide", res["applied_configs"])
+        self.assertFalse((self.shadow / "vehicles.ide").exists())
+        self.assertEqual(res["ide_notes"], [])
+        self.assertIn("executive", (self.game / "data" / "vehicles.ide").read_text(encoding="utf-8-sig"))
+
+
 class VanillaIdeTypoRegression(unittest.TestCase):
     WAYFARER_LINE = ("586,\twayfarer\twayfarer,\tbike,\t\tWAYFARER,\tWAYFARE,\twayfarer,motorbike,"
                      "\t6,\t0,\t0,\t\t23, 0.654, 0.654,\t-1")

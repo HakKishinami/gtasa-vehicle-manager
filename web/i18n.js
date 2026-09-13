@@ -643,6 +643,8 @@ window.I18N_DICTIONARY = {
     "modal.btnCancel": "Cancel",
     "confirm.appTitle": "GTASA Vehicle MOD Manager",
     "confirm.btnContinue": "Continue",
+    "alert.btnOk": "OK",
+    "install.ideNotesTitle": "vehicles.ide: package data was adjusted",
     "common.cancel": "Cancel",
     "common.saveAndApply": "Confirm & Apply",
     "modal.btnApply": "Apply to Shadow Baseline",
