@@ -4769,7 +4769,7 @@ function setupInstaller() {
           // their own dialog: silently ignoring them is what made the
           // vehicles.ide merge look like it never ran.
           if (Array.isArray(data.ide_notes) && data.ide_notes.length) {
-            showAppAlert(window.t("install.ideNotesTitle", "vehicles.ide: package data was adjusted") + "\n\n" + data.ide_notes.join("\n"));
+            showAppAlert(window.t("install.ideNotesTitle", "Package data was adjusted") + "\n\n" + data.ide_notes.join("\n"));
           }
           loadSystemStatus();
           loadMods();
@@ -5737,7 +5737,7 @@ function syncCurrentWizardFormToState() {
     const txdInp = document.getElementById("installNewTxdName");
     const hidInp = document.getElementById("installNewHandlingId");
     if (nameInp) curr.target_model = nameInp.value.trim().toLowerCase();
-    if (txdInp) curr.target_txd = txdInp.value.trim().toLowerCase() || curr.target_model;
+    if (txdInp) curr.target_txd = txdInp.value.trim().toLowerCase() || curr.declared_txd || curr.target_model;
     if (hidInp) curr.target_handling = hidInp.value.trim().toUpperCase();
   } else if (selVeh && selVeh.value) {
     curr.target_model = selVeh.value.toLowerCase();
@@ -6521,6 +6521,10 @@ function renderInstallStep2(data) {
     wizardVehicles = data.target_vehicles.map((tv, idx) => {
       const model = (tv.target_model || tv.model || "infernus").toLowerCase();
       const vMatch = vanillaVehicles.find(v => v.model.toLowerCase() === model);
+      const isAddonCar = isAddonModel((tv.source_model || tv.model || "").toLowerCase());
+      // An addon keeps the TXD the author declared in vehicles.ide; only when
+      // the package declares none does the name default to the model itself.
+      const declaredTxd = String(tv.declared_txd || "").toLowerCase();
       return {
         index: idx,
         source_model: (tv.source_model || tv.model || "").toLowerCase(),
@@ -6544,8 +6548,9 @@ function renderInstallStep2(data) {
         tuning_id_assignments: {},
         skip: Boolean(tv.alternative_of),
         alternative_of: tv.alternative_of || "",
-        install_mode: isAddonModel((tv.source_model || tv.model || "").toLowerCase()) ? "addon" : "replace",
-        target_txd: isAddonModel((tv.source_model || tv.model || "").toLowerCase()) ? model : "",
+        install_mode: isAddonCar ? "addon" : "replace",
+        declared_txd: declaredTxd,
+        target_txd: isAddonCar ? (declaredTxd || model) : "",
         target_handling: "",
         is_configured: false
       };
@@ -6621,8 +6626,10 @@ function renderInstallStep2(data) {
     const modeNameInput = document.getElementById("installNewModelName");
     const modeTxdInput = document.getElementById("installNewTxdName");
     const modeHandlingInput = document.getElementById("installNewHandlingId");
+    const singleTv = (data.target_vehicles || []).find(tv => ((tv.target_model || tv.model || "").toLowerCase() === defaultModel));
+    const singleDeclaredTxd = String((singleTv && singleTv.declared_txd) || "").toLowerCase();
     if (modeNameInput) modeNameInput.value = singleIsAddon ? defaultModel : "";
-    if (modeTxdInput) modeTxdInput.value = singleIsAddon ? defaultModel : "";
+    if (modeTxdInput) modeTxdInput.value = singleIsAddon ? (singleDeclaredTxd || defaultModel) : "";
     if (modeHandlingInput) {
       modeHandlingInput.value = singleIsAddon ? suggestHandlingId(defaultModel) : "";
       modeHandlingInput.dataset.auto = singleIsAddon ? "1" : "0";

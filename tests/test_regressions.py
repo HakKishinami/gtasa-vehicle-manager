@@ -3972,6 +3972,411 @@ class TextEncodingDetectionRegression(unittest.TestCase):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+class DeclaredTxdRegression(unittest.TestCase):
+    """A new model may declare another vehicle's TXD in its vehicles.ide line
+    (e.g. "ID, sentxs, sentinel, car, ..."): the installer must keep the
+    author's column and deploy the texture under the name the written line
+    references instead of defaulting it to the model name."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="declared_txd_")
+        self.addCleanup(self.temp.cleanup)
+        self.game = Path(self.temp.name) / "game"
+        (self.game / "data").mkdir(parents=True)
+        (self.game / "gta_sa.exe").write_bytes(b"x")
+        (self.game / "data" / "vehicles.ide").write_text(
+            "cars\n405, sentinel, sentinel, car, SENTINEL, SENTINL, null, executive, 10, 0, 0, -1, 0.73, 0.73, 0\nend\n",
+            encoding="utf-8")
+        (self.game / "data" / "handling.cfg").write_text("; h\n" + handling("SENTINEL") + "\n", encoding="utf-8")
+        (self.game / "data" / "carcols.dat").write_text("car\nsentinel, 51, 0\nend\n", encoding="utf-8")
+        (self.game / "data" / "carmods.dat").write_text("mods\nsentinel, nto_b_l\nend\n", encoding="utf-8")
+        self.shadow = self.game / "modloader" / "Modded Cars"
+        self.source = Path(self.temp.name) / "sentinel84"
+        self.source.mkdir()
+        (self.source / "sentinel.dff").write_bytes(b"sentinel dff")
+        (self.source / "sentinel.txd").write_bytes(b"sentinel txd")
+        (self.source / "sentxs.dff").write_bytes(b"sentxs dff")
+        (self.source / "sentxs.fxt").write_text("SENTXS Sentinel XS\n", encoding="utf-8")
+        (self.source / "readme.txt").write_text(
+            "vehicles.ide\n"
+            "405, sentinel, sentinel, car, SENTINEL, SENTINL, null, executive, 10, 0, 0, -1, 0.73, 0.73, 0\n"
+            "ID, sentxs, sentinel, car, SENTXS, SENTXS, null, executive, 8, 0, 0, -1, 0.73, 0.73, 0\n",
+            encoding="utf-8")
+        self.backup = BackupManager(backup_dir=str(Path(self.temp.name) / "backups"), game_dir=str(self.game))
+        self.installer = ModInstaller(str(self.game), "Modded Cars", backup_manager=self.backup)
+
+    def payload(self, skip_replace=False, **addon_overrides):
+        addon = {
+            "source_model": "sentxs", "target_model": "sentxs", "category": "Addon Cars",
+            "addon_id": 12093, "declared_txd": "sentinel", "target_txd": "",
+            "generate_fxt": True, "fxt_key": "SENTXS", "fxt_name": "Sentinel XS",
+        }
+        addon.update(addon_overrides)
+        return {
+            "inspect_dir": str(self.source), "target_category": "Addon Cars", "folder_name": "Sentinel84",
+            "vehicles": [
+                {"source_model": "sentinel", "target_model": "sentinel", "category": "Modded Cars",
+                 "skip": skip_replace},
+                addon,
+            ],
+        }
+
+    def installed_line(self, model):
+        text = (self.shadow / "vehicles.ide").read_text(encoding="utf-8-sig")
+        return next(line for line in text.splitlines() if model in line.lower())
+
+    def test_inspection_reports_the_declared_texture(self):
+        inspection = self.installer.inspect_source(str(self.source))
+        self.assertTrue(inspection["success"], inspection)
+        by_model = {v["model"]: v for v in inspection["target_vehicles"]}
+        self.assertEqual(by_model["sentxs"]["declared_txd"], "sentinel")
+        self.assertEqual(by_model["sentxs"]["txd_files"], [])
+        self.assertEqual(by_model["sentinel"]["txd_files"], ["sentinel.txd"])
+
+    def test_addon_keeps_the_authors_texture_column(self):
+        res = self.installer.execute_install(self.payload())
+        self.assertTrue(res["success"], res)
+        dec = DualTrackParser().decompose_ide(self.installed_line("sentxs"))
+        self.assertEqual(dec["id"], 12093)
+        self.assertEqual(dec["model_name"], "sentxs")
+        self.assertEqual(dec["txd_name"], "sentinel")
+        self.assertTrue((self.shadow / "Sentinel84" / "sentinel.txd").is_file())
+
+    def test_shared_texture_is_deployed_when_its_owner_is_skipped(self):
+        res = self.installer.execute_install(self.payload(skip_replace=True))
+        self.assertTrue(res["success"], res)
+        self.assertEqual(DualTrackParser().decompose_ide(self.installed_line("sentxs"))["txd_name"], "sentinel")
+        addon_dir = self.game / "modloader" / "Addon Cars" / "Sentinel84"
+        self.assertTrue((addon_dir / "sentinel.txd").is_file())
+        self.assertFalse((addon_dir / "sentinel.dff").exists())
+
+    def test_explicit_texture_name_overrides_the_declared_one(self):
+        res = self.installer.execute_install(self.payload(target_txd="custm_txd"))
+        self.assertTrue(res["success"], res)
+        self.assertEqual(DualTrackParser().decompose_ide(self.installed_line("sentxs"))["txd_name"], "custm_txd")
+
+    def test_payload_without_texture_information_keeps_line_and_file_in_sync(self):
+        res = self.installer.execute_install({
+            "inspect_dir": str(self.source), "target_category": "Addon Cars", "folder_name": "SentinelXS",
+            "target_model": "sentxs", "source_model": "sentxs", "source_type": "car",
+            "generate_fxt": True, "merge_fla": False,
+        })
+        self.assertTrue(res["success"], res)
+        self.assertEqual(DualTrackParser().decompose_ide(self.installed_line("sentxs"))["txd_name"], "sentinel")
+        self.assertTrue((self.game / "modloader" / "Addon Cars" / "SentinelXS" / "sentinel.txd").is_file())
+
+    def test_package_without_declaration_keeps_the_model_name(self):
+        plain = Path(self.temp.name) / "plain"
+        plain.mkdir()
+        (plain / "plaincar.dff").write_bytes(b"dff")
+        (plain / "plaincar.txd").write_bytes(b"txd")
+        (plain / "readme.txt").write_text(
+            "vehicles.ide\nID, plaincar, plaincar, car, PLAINCAR, PLAINCAR, null, normal, 5, 0, 0, -1, 0.7, 0.7, 0\n",
+            encoding="utf-8")
+        res = self.installer.execute_install({
+            "inspect_dir": str(plain), "target_category": "Addon Cars", "folder_name": "Plain",
+            "vehicles": [{"source_model": "plaincar", "target_model": "plaincar", "category": "Addon Cars",
+                          "addon_id": 12094, "target_txd": "", "declared_txd": "plaincar"}],
+        })
+        self.assertTrue(res["success"], res)
+        self.assertEqual(DualTrackParser().decompose_ide(self.installed_line("plaincar"))["txd_name"], "plaincar")
+        self.assertTrue((self.game / "modloader" / "Addon Cars" / "Plain" / "plaincar.txd").is_file())
+
+
+class PartFileNamingRegression(unittest.TestCase):
+    """A tuning part whose file name follows no known prefix (and is not in a
+    "tuning" folder) must keep its own name: renaming it onto the vehicle model
+    used to overwrite the car's own DFF/TXD, or silently drop the part."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="part_names_")
+        self.addCleanup(self.temp.cleanup)
+        self.game = Path(self.temp.name) / "game"
+        (self.game / "data").mkdir(parents=True)
+        (self.game / "gta_sa.exe").write_bytes(b"x")
+        (self.game / "data" / "vehicles.ide").write_text(
+            "cars\n"
+            "405, sentinel, sentinel, car, SENTINEL, SENTINL, null, executive, 10, 0, 0, -1, 0.73, 0.73, 0\n"
+            "602, blade, blade, car, BLADE, BLADE, null, executive, 8, 0, 0, -1, 0.7, 0.7, 0\n"
+            "end\n",
+            encoding="utf-8")
+        (self.game / "data" / "handling.cfg").write_text("; h\n" + handling("SENTINEL") + "\n", encoding="utf-8")
+        (self.game / "data" / "carcols.dat").write_text("car\nsentinel, 51, 0\nend\n", encoding="utf-8")
+        (self.game / "data" / "carmods.dat").write_text("mods\nsentinel, nto_b_l\nend\n", encoding="utf-8")
+        (self.game / "data" / "shopping.dat").write_text(
+            "section prices\nsection CarMods\nnto_b_l NTO respect 0 sexy 0 500\nend\nend\n", encoding="utf-8")
+        vm_dir = self.game / "data" / "maps" / "veh_mods"
+        vm_dir.mkdir(parents=True, exist_ok=True)
+        (vm_dir / "veh_mods.ide").write_text("objs\n1005, bnt_b_sc_l, vehicle, 70, 0\nend\n", encoding="utf-8")
+        self.shadow = self.game / "modloader" / "Modded Cars"
+        self.backup = BackupManager(backup_dir=str(Path(self.temp.name) / "backups"), game_dir=str(self.game))
+        self.installer = ModInstaller(str(self.game), "Modded Cars", backup_manager=self.backup)
+
+    def pack(self, name, part=None, referenced=False, extra_vehicle=False):
+        source = Path(self.temp.name) / name
+        source.mkdir()
+        (source / "sentinel.dff").write_bytes(b"CAR MODEL BINARY")
+        (source / "sentinel.txd").write_bytes(b"CAR TEXTURE BINARY")
+        if extra_vehicle:
+            (source / "blade.dff").write_bytes(b"SECOND CAR MODEL")
+            (source / "blade.txd").write_bytes(b"SECOND CAR TEXTURE")
+        readme = ("vehicles.ide\n"
+                  "405, sentinel, sentinel, car, SENTINEL, SENTINL, null, executive, 10, 0, 0, -1, 0.73, 0.73, 0\n")
+        if extra_vehicle:
+            readme += "602, blade, blade, car, BLADE, BLADE, null, executive, 8, 0, 0, -1, 0.7, 0.7, 0\n"
+        if part:
+            (source / (part + ".dff")).write_bytes(b"PART DFF BINARY")
+            (source / (part + ".txd")).write_bytes(b"PART TXD BINARY")
+            if referenced:
+                readme += ("\nveh_mods.ide\n"
+                           f"11000, {part}, sentinel, 100, 2097152\n"
+                           "\ncarmods.dat\n"
+                           f"sentinel, {part}\n"
+                           "\nshopping.dat\n"
+                           "section CarMods\n"
+                           f"{part} ADAM respect 0 sexy 0 777\nend\n")
+        (source / "readme.txt").write_text(readme, encoding="utf-8")
+        return source
+
+    def deploy(self, source, vehicles=None, **extra):
+        params = {"inspect_dir": str(source), "target_category": "Modded Cars", "folder_name": "Pack",
+                  "merge_fla": False, "generate_fxt": False}
+        if vehicles is None:
+            params.update({"target_model": "sentinel", "source_model": "sentinel", "source_type": "car"})
+        else:
+            params["vehicles"] = vehicles
+        params.update(extra)
+        return self.installer.execute_install(params)
+
+    def deployed(self, name):
+        return (self.shadow / "Pack" / name).read_bytes()
+
+    def test_inspection_does_not_offer_a_referenced_part_as_a_vehicle(self):
+        source = self.pack("classified", part="airdam", referenced=True)
+        inspection = self.installer.inspect_source(str(source))
+        self.assertTrue(inspection["success"], inspection)
+        models = [v["model"] for v in inspection["target_vehicles"]]
+        self.assertIn("sentinel", models)
+        self.assertNotIn("airdam", models)
+        tuning_names = [f["name"] for f in inspection["asset_files"]["tuning"]]
+        self.assertIn("airdam.dff", tuning_names)
+
+    def test_configured_part_keeps_its_name_and_never_replaces_the_car(self):
+        source = self.pack("configured", part="airdam", referenced=True)
+        res = self.deploy(source)
+        self.assertTrue(res["success"], res)
+        self.assertEqual(self.deployed("sentinel.dff"), b"CAR MODEL BINARY")
+        self.assertEqual(self.deployed("sentinel.txd"), b"CAR TEXTURE BINARY")
+        self.assertEqual(self.deployed("airdam.dff"), b"PART DFF BINARY")
+        self.assertEqual(self.deployed("airdam.txd"), b"PART TXD BINARY")
+        self.assertIn("airdam", (self.shadow / "carmods.dat").read_text(encoding="utf-8-sig"))
+
+    def test_unlisted_extra_file_keeps_its_name_instead_of_overwriting_the_car(self):
+        source = self.pack("extra", part="airdam", referenced=False)
+        res = self.deploy(source)
+        self.assertTrue(res["success"], res)
+        self.assertEqual(self.deployed("sentinel.dff"), b"CAR MODEL BINARY")
+        self.assertEqual(self.deployed("sentinel.txd"), b"CAR TEXTURE BINARY")
+        self.assertEqual(self.deployed("airdam.dff"), b"PART DFF BINARY")
+        self.assertEqual(self.deployed("airdam.txd"), b"PART TXD BINARY")
+
+    def test_part_survives_when_the_other_vehicle_is_skipped(self):
+        source = self.pack("skipped", part="airdam", referenced=True, extra_vehicle=True)
+        res = self.deploy(source, vehicles=[
+            {"source_model": "sentinel", "target_model": "sentinel", "category": "Modded Cars", "target_txd": ""},
+            {"source_model": "blade", "target_model": "blade", "category": "Modded Cars", "skip": True},
+        ])
+        self.assertTrue(res["success"], res)
+        self.assertEqual(self.deployed("sentinel.dff"), b"CAR MODEL BINARY")
+        self.assertEqual(self.deployed("sentinel.txd"), b"CAR TEXTURE BINARY")
+        self.assertEqual(self.deployed("airdam.dff"), b"PART DFF BINARY")
+
+    def test_pack_without_its_own_model_still_installs_under_the_target_name(self):
+        source = Path(self.temp.name) / "renamed"
+        source.mkdir()
+        (source / "recurve.dff").write_bytes(b"ONLY MODEL BINARY")
+        (source / "recurve.txd").write_bytes(b"ONLY TEXTURE BINARY")
+        res = self.deploy(source)
+        self.assertTrue(res["success"], res)
+        self.assertEqual(self.deployed("sentinel.dff"), b"ONLY MODEL BINARY")
+        self.assertEqual(self.deployed("sentinel.txd"), b"ONLY TEXTURE BINARY")
+
+
+class ShortIdeLineMergeRegression(unittest.TestCase):
+    """A package whose vehicles.ide line stops early must not shorten the
+    target's line: columns it does not declare keep their vanilla values
+    instead of falling back to engine defaults."""
+
+    VANILLA_LINE = "405, sentinel, sentinel, car, SENTINEL, SENTINL, null, executive, 10, 0, 0, -1, 0.73, 0.73, 0"
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="short_ide_")
+        self.addCleanup(self.temp.cleanup)
+        self.game = Path(self.temp.name) / "game"
+        (self.game / "data").mkdir(parents=True)
+        (self.game / "gta_sa.exe").write_bytes(b"x")
+        (self.game / "data" / "vehicles.ide").write_text(f"cars\n{self.VANILLA_LINE}\nend\n", encoding="utf-8")
+        (self.game / "data" / "handling.cfg").write_text("; h\n" + handling("SENTINEL") + "\n", encoding="utf-8")
+        (self.game / "data" / "carcols.dat").write_text("car\nsentinel, 51, 0\nend\n", encoding="utf-8")
+        (self.game / "data" / "carmods.dat").write_text("mods\nsentinel, nto_b_l\nend\n", encoding="utf-8")
+        self.shadow = self.game / "modloader" / "Modded Cars"
+        self.source = Path(self.temp.name) / "shortpack"
+        self.source.mkdir()
+        (self.source / "sentinel.dff").write_bytes(b"dff")
+        (self.source / "sentinel.txd").write_bytes(b"txd")
+        (self.source / "readme.txt").write_text(
+            "vehicles.ide\n405, sentinel, sentinel, car, SENTINEL, SENTINL, null, executive, 3\n", encoding="utf-8")
+        self.backup = BackupManager(backup_dir=str(Path(self.temp.name) / "backups"), game_dir=str(self.game))
+        self.installer = ModInstaller(str(self.game), "Modded Cars", backup_manager=self.backup)
+
+    def test_undeclared_trailing_columns_keep_their_vanilla_values(self):
+        res = self.installer.execute_install({
+            "inspect_dir": str(self.source), "target_category": "Modded Cars", "folder_name": "ShortPack",
+            "vehicles": [{"source_model": "sentinel", "target_model": "sentinel", "category": "Modded Cars",
+                          "target_txd": "", "merge_handling": False, "merge_carcols": False,
+                          "merge_carmods": False, "merge_fla": False, "generate_fxt": False}],
+        })
+        self.assertTrue(res["success"], res)
+        ide = (self.shadow / "vehicles.ide").read_text(encoding="utf-8-sig")
+        line = next(l for l in ide.splitlines() if l.strip().startswith("405,"))
+        tokens = [t.strip() for t in line.split(",")]
+        vanilla = [t.strip() for t in self.VANILLA_LINE.split(",")]
+        self.assertEqual(tokens[:6], vanilla[:6])
+        self.assertEqual(tokens[8], "3")
+        self.assertEqual(tokens[9:], vanilla[9:])
+
+
+class ShoppingPriceOverrideNoteRegression(unittest.TestCase):
+    """An author who re-prices an already registered part must not have the
+    declaration vanish silently: the existing entry stays (rewriting lines in
+    the shared shopping.dat is out of scope) and the install reports it."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="price_note_")
+        self.addCleanup(self.temp.cleanup)
+        self.game = Path(self.temp.name) / "game"
+        (self.game / "data").mkdir(parents=True)
+        (self.game / "gta_sa.exe").write_bytes(b"x")
+        (self.game / "data" / "vehicles.ide").write_text(
+            "cars\n477, zr350, zr350, car, ZR350, ZR350, null, richfamily, 8, 0, 0, -1, 0.76, 0.76, 1\nend\n",
+            encoding="utf-8")
+        (self.game / "data" / "handling.cfg").write_text("; h\n" + handling("ZR350") + "\n", encoding="utf-8")
+        (self.game / "data" / "carcols.dat").write_text("car\nzr350, 51, 0\nend\n", encoding="utf-8")
+        (self.game / "data" / "carmods.dat").write_text("mods\nzr350, exh_a_zr\nend\n", encoding="utf-8")
+        # Vanilla price entry the package tries to re-price.
+        (self.game / "data" / "shopping.dat").write_text(
+            "section prices\nsection CarMods\nexh_a_zr ZR2AE respect 0 sexy 0 850\nend\nend\n", encoding="utf-8")
+        vm_dir = self.game / "data" / "maps" / "veh_mods"
+        vm_dir.mkdir(parents=True, exist_ok=True)
+        (vm_dir / "veh_mods.ide").write_text("objs\n1000, exh_a_zr, zr350, 100, 2097152\nend\n", encoding="utf-8")
+        self.shadow = self.game / "modloader" / "Modded Cars"
+        self.source = Path(self.temp.name) / "pack"
+        self.source.mkdir()
+        (self.source / "zr350.dff").write_bytes(b"dff")
+        (self.source / "zr350.txd").write_bytes(b"txd")
+        (self.source / "exh_a_zr.dff").write_bytes(b"part dff")
+        (self.source / "newpart1.dff").write_bytes(b"new part dff")
+        self.backup = BackupManager(backup_dir=str(Path(self.temp.name) / "backups"), game_dir=str(self.game))
+        self.installer = ModInstaller(str(self.game), "Modded Cars", backup_manager=self.backup)
+
+    def install(self, shopping_body):
+        (self.source / "readme.txt").write_text(
+            "vehicles.ide\n"
+            "477, zr350, zr350, car, ZR350, ZR350, null, richfamily, 8, 0, 0, -1, 0.76, 0.76, 1\n"
+            "\ncarmods.dat\nzr350, exh_a_zr, newpart1\n"
+            "\nveh_mods.ide\nID, newpart1, zr350, 100, 2097152\n"
+            "\nshopping.dat\nsection CarMods\n" + shopping_body + "end\n",
+            encoding="utf-8")
+        return self.installer.execute_install({
+            "inspect_dir": str(self.source), "target_category": "Modded Cars", "folder_name": "ZR350HD",
+            "vehicles": [{"source_model": "zr350", "target_model": "zr350", "category": "Modded Cars",
+                          "target_txd": "", "merge_fla": False, "generate_fxt": False}],
+        })
+
+    def test_repricing_an_existing_part_keeps_the_entry_and_reports_it(self):
+        res = self.install("exh_a_zr ZR2AE respect 5 sexy 3 1200\n"
+                           "newpart1 NEWPART respect 0 sexy 0 777\n")
+        self.assertTrue(res["success"], res)
+        shopping = (self.shadow / "shopping.dat").read_text(encoding="utf-8-sig")
+        self.assertIn("exh_a_zr ZR2AE respect 0 sexy 0 850", shopping)
+        self.assertNotIn("1200", shopping)
+        self.assertIn("newpart1", shopping)
+        self.assertIn("777", shopping)
+        notes = res.get("ide_notes") or []
+        self.assertTrue(any("shopping.dat" in n and "EXH_A_ZR" in n and "$1200" in n for n in notes), notes)
+
+    def test_new_parts_are_registered_without_a_note(self):
+        res = self.install("newpart1 NEWPART respect 0 sexy 0 777\n")
+        self.assertTrue(res["success"], res)
+        shopping = (self.shadow / "shopping.dat").read_text(encoding="utf-8-sig")
+        self.assertIn("777", shopping)
+        self.assertEqual(res.get("ide_notes") or [], [])
+
+
+class CarmodsDeclarationRegression(unittest.TestCase):
+    """A part list the package declares is deployed verbatim - the vehicle's
+    generic upgrades (nitro/hydraulics/stereo) are no longer re-added behind
+    the author's back. Only a fallback list the tool has to generate itself
+    (a package that ships part files but no carmods.dat) keeps the car's
+    baseline generics."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="carmods_decl_")
+        self.addCleanup(self.temp.cleanup)
+        self.game = Path(self.temp.name) / "game"
+        (self.game / "data").mkdir(parents=True)
+        (self.game / "gta_sa.exe").write_bytes(b"x")
+        (self.game / "data" / "vehicles.ide").write_text(
+            "cars\n405, sentinel, sentinel, car, SENTINEL, SENTINL, null, executive, 10, 0, 0, -1, 0.73, 0.73, 0\nend\n",
+            encoding="utf-8")
+        (self.game / "data" / "handling.cfg").write_text("; h\n" + handling("SENTINEL") + "\n", encoding="utf-8")
+        (self.game / "data" / "carcols.dat").write_text("car\nsentinel, 51, 0\nend\n", encoding="utf-8")
+        (self.game / "data" / "carmods.dat").write_text(
+            "mods\nsentinel, exh_b_l, exh_b_m, nto_b_l, nto_b_s, nto_b_tw\nend\n", encoding="utf-8")
+        (self.game / "data" / "shopping.dat").write_text(
+            "section prices\nsection CarMods\nnto_b_l BMBLN respect 0 sexy 0 500\n"
+            "nto_b_s BMBSM respect 0 sexy 0 200\nnto_b_tw BMBTN respect 0 sexy 0 1000\nend\nend\n",
+            encoding="utf-8")
+        self.shadow = self.game / "modloader" / "Modded Cars"
+        self.source = Path(self.temp.name) / "pack"
+        self.source.mkdir()
+        (self.source / "sentinel.dff").write_bytes(b"dff")
+        (self.source / "sentinel.txd").write_bytes(b"txd")
+        self.backup = BackupManager(backup_dir=str(Path(self.temp.name) / "backups"), game_dir=str(self.game))
+        self.installer = ModInstaller(str(self.game), "Modded Cars", backup_manager=self.backup)
+
+    def install(self, readme):
+        (self.source / "readme.txt").write_text(readme, encoding="utf-8")
+        return self.installer.execute_install({
+            "inspect_dir": str(self.source), "target_category": "Modded Cars", "folder_name": "Pack",
+            "vehicles": [{"source_model": "sentinel", "target_model": "sentinel", "category": "Modded Cars",
+                          "target_txd": "", "merge_fla": False, "generate_fxt": False}],
+        })
+
+    def installed_line(self):
+        text = (self.shadow / "carmods.dat").read_text(encoding="utf-8-sig")
+        return next(l for l in text.splitlines() if l.strip().lower().startswith("sentinel"))
+
+    def test_declared_list_is_deployed_verbatim(self):
+        (self.source / "fbmp_hd_a.dff").write_bytes(b"part")
+        res = self.install(
+            "vehicles.ide\n405, sentinel, sentinel, car, SENTINEL, SENTINL, null, executive, 10, 0, 0, -1, 0.73, 0.73, 0\n"
+            "\ncarmods.dat\nsentinel, fbmp_hd_a\n")
+        self.assertTrue(res["success"], res)
+        line = self.installed_line()
+        self.assertIn("fbmp_hd_a", line)
+        self.assertNotIn("nto_", line)
+
+    def test_generated_fallback_keeps_baseline_generics(self):
+        (self.source / "spl_hd_a.dff").write_bytes(b"part")
+        res = self.install(
+            "vehicles.ide\n405, sentinel, sentinel, car, SENTINEL, SENTINL, null, executive, 10, 0, 0, -1, 0.73, 0.73, 0\n")
+        self.assertTrue(res["success"], res)
+        line = self.installed_line()
+        self.assertIn("spl_hd_a", line)
+        self.assertIn("nto_b_l", line)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

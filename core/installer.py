@@ -168,6 +168,29 @@ def resolve_txd_model_info(
     return {"model": base, "is_paintjob": False, "paintjob_num": None, "suffix": "", "raw_suffix": ""}
 
 
+def deployed_txd_name(vehicle: Dict[str, Any], declared_fallback: str = "") -> str:
+    """TXD name the installed vehicle will actually reference (and deploy under).
+
+    Only a new addon model (one that gets its own vehicles.ide line) may point
+    at a texture dictionary other than its own name: an explicit wizard value
+    wins, then the author's declared column (models are allowed to share a TXD,
+    e.g. an addon reusing the base car's textures). A replacement target always
+    keeps its own name because its vanilla IDE line - which the installer never
+    rewrites - still references that name.
+    """
+    target_model = str(vehicle.get("target_model") or "").strip().lower()
+    if not target_model or target_model in MODEL_TO_ID:
+        return target_model
+    explicit = str(vehicle.get("target_txd") or "").strip().lower()
+    if explicit:
+        return explicit
+    for _candidate in (vehicle.get("declared_txd"), declared_fallback):
+        _name = str(_candidate or "").strip().lower()
+        if _name and re.fullmatch(r'[a-z0-9_]{2,20}', _name):
+            return _name
+    return target_model
+
+
 _DOC_TEXT_EXTENSIONS = {".txt", ".readme", ".md", ".me", ".log", ".cfg", ".dat", ".ide", ".ini"}
 
 
@@ -222,6 +245,65 @@ def _doc_referenced_models(parser: DualTrackParser, path: str) -> set:
             if toks and toks[0]:
                 models.add(toks[0].lower())
     return models
+
+
+def _part_names_from_parsed(parser: DualTrackParser, parsed: Dict[str, Any]) -> set:
+    """Tuning part names a parsed config set references (carmods.dat,
+    veh_mods.ide, shopping.dat)."""
+    names = set()
+    for line in parsed.get("carmods_dat", []) or []:
+        for tok in [t.strip() for t in line.split(",")][1:]:
+            if re.fullmatch(r'[a-z0-9_]{2,24}', tok.lower()):
+                names.add(tok.lower())
+    for line in parsed.get("veh_mods_ide", []) or []:
+        toks = [t.strip() for t in line.split(",") if t.strip()]
+        if len(toks) >= 2 and re.fullmatch(r'[a-z0-9_]{2,28}', toks[1].lower()):
+            names.add(toks[1].lower())
+    shop = parser.decompose_shopping(parsed.get("shopping_dat", []) or [])
+    for entry in shop.get("carmods", []) or []:
+        if entry.get("part_name"):
+            names.add(str(entry["part_name"]).lower())
+    for part_list in (shop.get("workshops") or {}).values():
+        for part in part_list or []:
+            if re.fullmatch(r'[a-z0-9_]{2,28}', str(part).lower()):
+                names.add(str(part).lower())
+    return names
+
+
+def _package_asset_index(parser: DualTrackParser, directory: str) -> Dict[str, Any]:
+    """What the package ships and how its own configs describe it.
+
+    - dffs / txds: base names of the model and texture files on disk
+    - parts: tuning part names referenced by carmods.dat / veh_mods.ide /
+      shopping.dat, so a part file is never mistaken for a vehicle
+    - declared_txd: model -> TXD name declared in vehicles.ide documents
+    """
+    index: Dict[str, Any] = {"dffs": set(), "txds": set(), "parts": set(), "declared_txd": {}}
+    for root, _, files in os.walk(directory):
+        for fname in files:
+            lower = fname.lower()
+            base, ext = os.path.splitext(lower)
+            if ext == ".dff":
+                index["dffs"].add(base)
+            elif ext == ".txd":
+                index["txds"].add(base)
+
+            if lower not in ("vehicles.ide", "vehicles.ide.source") \
+                    and not any(lower.endswith(_ext) for _ext in _DOC_TEXT_EXTENSIONS):
+                continue
+            try:
+                parsed = parser.parse_text_content(read_text_file_safe(os.path.join(root, fname)))
+            except Exception:
+                continue
+
+            for line in parsed.get("vehicles_ide", []) or []:
+                toks = [t.strip() for t in line.split(",")]
+                if len(toks) >= 3 and toks[1] and toks[2]:
+                    name = toks[2].lower()
+                    if re.fullmatch(r'[a-z0-9_]{2,20}', name):
+                        index["declared_txd"].setdefault(toks[1].lower(), name)
+            index["parts"].update(_part_names_from_parsed(parser, parsed))
+    return index
 
 
 class ModInstaller:
@@ -403,6 +485,23 @@ class ModInstaller:
             if line_str not in parsed_config["fxt_text"]:
                 parsed_config["fxt_text"].insert(0, line_str)
 
+        # Tuning parts the package's own configs reference. Their files are
+        # parts, not vehicles: without this the wizard would offer e.g. a
+        # spoiler as an addon car, and installing it would deploy the part as
+        # the car model.
+        _referenced_parts = _part_names_from_parsed(self.parser, parsed_config)
+        if _referenced_parts:
+            _moved_dffs = [f for f in primary_dffs
+                           if f.get("model") in _referenced_parts and f.get("model") not in MODEL_TO_ID]
+            if _moved_dffs:
+                primary_dffs = [f for f in primary_dffs if f not in _moved_dffs]
+                tuning_dffs.extend(_moved_dffs)
+            _moved_txds = [f for f in primary_txds
+                           if f.get("model") in _referenced_parts and f.get("model") not in MODEL_TO_ID]
+            if _moved_txds:
+                primary_txds = [f for f in primary_txds if f not in _moved_txds]
+                tuning_txds.extend(_moved_txds)
+
         # Collect all target vehicles
         target_vehicles = []
         seen_models = set()
@@ -540,8 +639,11 @@ class ModInstaller:
                     _handling_ids.add(_t0)
         _ide_handling = {}
         _ide_game_names = {}
+        _ide_txd = {}
         for _il in parsed_config.get("vehicles_ide", []) or []:
             _toks = [_t.strip() for _t in _il.split(",")]
+            if len(_toks) >= 3 and _toks[1] and _toks[2]:
+                _ide_txd[_toks[1].lower()] = _toks[2].lower()
             if len(_toks) >= 5:
                 _ide_handling[_toks[1].lower()] = _toks[4].lower()
             if len(_toks) >= 6:
@@ -592,7 +694,14 @@ class ModInstaller:
             v["target_model"] = m
             v["dff_files"] = [f["name"] for f in primary_dffs if f["model"] == m]
             v["txd_files"] = [f["name"] for f in primary_txds if f["model"] == m]
-            
+
+            # Texture dictionary the author declared for this model. A new
+            # model may deliberately reuse another car's TXD instead of
+            # shipping its own (e.g. "sentxs, sentinel" next to the base car),
+            # so the declared column - not the model name - is the intent.
+            _declared_txd = _ide_txd.get(m.lower(), "")
+            v["declared_txd"] = _declared_txd if re.fullmatch(r'[a-z0-9_]{2,20}', _declared_txd or "") else ""
+
             # Find vehicle-specific fxt if present
             v_fxt_key = _ide_game_names.get(m.lower(), m.upper()).upper()
             v_fxt_name = ""
@@ -1085,6 +1194,8 @@ class ModInstaller:
                 "source_model": (params.get("source_model") or "").strip().lower() or target_model,
                 "source_type": (params.get("source_type") or "").strip().lower(),
                 "target_model": target_model,
+                "target_txd": params.get("target_txd", ""),
+                "declared_txd": params.get("declared_txd", ""),
                 "copy_files": params.get("copy_files", True),
                 "merge_handling": params.get("merge_handling", True),
                 "merge_carcols": params.get("merge_carcols", True),
@@ -1122,6 +1233,17 @@ class ModInstaller:
                               f"{_tinfo['name']} ({_tm.upper()}, {_tgt_type.upper()}): handling and animation "
                               f"schemas differ between vehicle classes; pick a vanilla {_src_type.upper()} target instead.")
                 }
+
+        # What the package ships: file names, the tuning parts its configs
+        # reference, and the TXD each model declares. A payload that carries no
+        # TXD information (legacy callers) still deploys the author's declared
+        # texture: the written IDE line keeps that column, so the texture file
+        # must carry the same name.
+        _pkg_index = _package_asset_index(self.parser, inspect_dir)
+        for _v in vehicles:
+            if not str(_v.get("declared_txd") or "").strip():
+                _key = str(_v.get("source_model") or _v.get("target_model") or "").strip().lower()
+                _v["declared_txd"] = _pkg_index["declared_txd"].get(_key, "")
 
         primary_target = vehicles[0]["target_model"].lower()
         author_folder = params.get("author_folder", "").strip()
@@ -1167,6 +1289,29 @@ class ModInstaller:
             str(v.get("source_model") or "").lower()
             for v in all_vehicles if v.get("skip") and v.get("source_model")
         }
+
+        # Texture dictionaries referenced by an active vehicle under a name that
+        # is not its own source model (an addon reusing another car's TXD). Such
+        # a file must still be deployed when its owning model is deselected.
+        referenced_txd = {}
+        for _rv in vehicles:
+            _rname = deployed_txd_name(_rv)
+            if _rname and _rname != str(_rv.get("source_model") or "").strip().lower():
+                referenced_txd.setdefault(_rname, _rv)
+
+        def _is_part_file(base_name: str, root_dir: str) -> bool:
+            """DFF/TXD that belongs to a tuning part rather than a vehicle.
+
+            Besides the well-known part prefixes and dedicated "tuning"
+            folders, the package may name parts its own way - every part its
+            configs reference keeps its file name instead of taking over the
+            vehicle's model name.
+            """
+            if base_name in active_sources or base_name in skipped_sources:
+                return False
+            return (base_name.startswith(KNOWN_TUNING_PREFIXES)
+                    or "tuning" in root_dir.lower()
+                    or base_name in _pkg_index["parts"])
 
         # Addon conversion / rename guard: a custom model (DFF) name must be
         # valid and must not already be claimed by another vehicle anywhere in
@@ -1247,8 +1392,8 @@ class ModInstaller:
                 _vidx_task = None
 
                 if ext in [".dff", ".txd"]:
-                    if base.startswith(KNOWN_TUNING_PREFIXES) or "tuning" in root.lower():
-                        # Dedicated tuning part: preserve original filename
+                    if _is_part_file(base, root):
+                        # Tuning part: preserve original filename
                         dest_name = fname
                         if base in excluded_tuning_parts:
                             should_copy = False
@@ -1260,8 +1405,15 @@ class ModInstaller:
                         src_model = txd_res["model"].lower()
 
                         if src_model in skipped_sources:
-                            # Asset of a vehicle deselected in wizard: do not copy
-                            should_copy = False
+                            # Asset of a vehicle deselected in wizard: deploy it
+                            # only when a kept vehicle declares this texture
+                            # dictionary, otherwise leave it out.
+                            _owner = referenced_txd.get(base)
+                            if _owner is not None and _owner.get("copy_files", True):
+                                _vidx_task = vehicles.index(_owner)
+                                dest_name = f"{base}.txd"
+                            else:
+                                should_copy = False
                         elif src_model in active_sources:
                             matched_v = active_sources[src_model]
                             if not matched_v.get("copy_files", True):
@@ -1269,9 +1421,7 @@ class ModInstaller:
                             else:
                                 _vidx_task = vehicles.index(matched_v)
                                 t_model = matched_v["target_model"].lower()
-                                out_name = t_model
-                                if matched_v.get("target_txd"):
-                                    out_name = str(matched_v["target_txd"]).strip().lower() or t_model
+                                out_name = deployed_txd_name(matched_v) or t_model
                                 if txd_res["is_paintjob"]:
                                     pj_num = txd_res.get("paintjob_num")
                                     if pj_num:
@@ -1286,12 +1436,15 @@ class ModInstaller:
                             matched_v = vehicles[0]
                             if not matched_v.get("copy_files", True):
                                 should_copy = False
+                            elif (deployed_txd_name(matched_v) or matched_v["target_model"].lower()) in _pkg_index["txds"]:
+                                # The car's own texture dictionary ships under
+                                # this name: an extra texture is not it and
+                                # keeps its own name instead of taking over.
+                                dest_name = fname
                             else:
                                 _vidx_task = 0
                                 t_model = matched_v["target_model"].lower()
-                                out_name = t_model
-                                if matched_v.get("target_txd"):
-                                    out_name = str(matched_v["target_txd"]).strip().lower() or t_model
+                                out_name = deployed_txd_name(matched_v) or t_model
                                 if txd_res["is_paintjob"]:
                                     pj_num = txd_res.get("paintjob_num")
                                     if pj_num:
@@ -1321,6 +1474,11 @@ class ModInstaller:
                             matched_v = vehicles[0]
                             if not matched_v.get("copy_files", True):
                                 should_copy = False
+                            elif str(matched_v.get("source_model") or "").lower() in _pkg_index["dffs"]:
+                                # The vehicle's own model ships under its own
+                                # name: an extra model (part, LOD, bonus) keeps
+                                # its name instead of overwriting the car.
+                                dest_name = fname
                             else:
                                 _vidx_task = 0
                                 t_model = matched_v["target_model"].lower()
@@ -1349,8 +1507,7 @@ class ModInstaller:
                     rel_norm = os.path.normpath(rel).replace("\\", "/").lower()
                     if rel_norm in excluded_files or fname.lower() in excluded_naked_basenames:
                         continue
-                    _is_tuning_file = ext in [".dff", ".txd"] and (
-                        base.startswith(KNOWN_TUNING_PREFIXES) or "tuning" in root.lower())
+                    _is_tuning_file = ext in [".dff", ".txd"] and _is_part_file(base, root)
                     _gkey = f"{'tuning' if _is_tuning_file else 'vehicle'}:{fname.lower()}"
                     copy_tasks.append((rel, src_file, dest_name, _gkey, _vidx_task))
 
@@ -1702,8 +1859,11 @@ class ModInstaller:
                         if excluded_tuning_parts:
                             tokens = [tokens[0]] + [tok for tok in tokens[1:] if tok.lower() not in excluded_tuning_parts]
                         tokens = [tokens[0]] + [tok for tok in tokens[1:] if not self.merger.tuning_mgr.is_mirror_counterpart(tok)]
-                        carmods_body = self.merger.merge_generic_carmods_parts(t_model, tokens[1:])
-                        tokens = [tokens[0]] + carmods_body
+                        # The package declared this part list: deploy exactly
+                        # what it says. Generic upgrades (nitro/hydraulics/
+                        # stereo) are only preserved when the tool has to
+                        # generate a fallback list itself (see plan_merge).
+                        carmods_body = tokens[1:]
                         cm_copy["raw"] = ", ".join(tokens)
                         cm_copy["model"] = t_model.lower()
                         cm_copy["model_name"] = t_model.lower()
@@ -1845,8 +2005,10 @@ class ModInstaller:
                         if len(_toks) >= 3:
                             _toks[0] = str(int(_nid))
                             _toks[1] = _tm
-                            _txd = str(_v.get("target_txd") or "").strip().lower()
-                            _toks[2] = _txd if _txd else _tm
+                            # The author's TXD column survives unless the user
+                            # explicitly typed another name: a new model may
+                            # share an existing car's texture dictionary.
+                            _toks[2] = deployed_txd_name(_v, _toks[2])
                             if len(_toks) >= 5 and _tm in final_handling_ids:
                                 _toks[4] = final_handling_ids[_tm]
                             if len(_toks) >= 6 and _tm in final_fxt_keys:
@@ -1917,6 +2079,15 @@ class ModInstaller:
                 }
 
             merge_res = self.merger.apply_merge(mod_info)
+            # The package re-priced a part that already has a shopping entry.
+            # The existing values are kept (rewriting the shared line is out of
+            # scope), so surface it with the other post-install notes.
+            for _skipped in merge_res.get("shopping_notes") or []:
+                _part = str(_skipped.get("part") or "").lower()
+                _price = _skipped.get("price")
+                ide_notes.append(
+                    f"shopping.dat: {_part.upper()} keeps its existing price entry; "
+                    f"the package declared ${_price}")
             if merge_res.get("success"):
                 applied_configs.extend(merge_res.get("applied_files", []))
                 # Replacement IDE definitions retain all baseline fields. Only
@@ -1965,7 +2136,15 @@ class ModInstaller:
                     for _note in _identity_notes:
                         variant_warnings.append(_note)
                         ide_notes.append(_note)
-                    _merged = _t_tokens[:6] + _m_tokens[6:]
+                    # The package's behavioral columns win; the ones it does not
+                    # declare keep the target's values. Taking the author's line
+                    # verbatim used to shorten the vanilla line (flags, comprules,
+                    # wheel scale/id fell back to engine defaults).
+                    _t_tail = _t_tokens[6:]
+                    _m_tail = _m_tokens[6:]
+                    if len(_m_tail) < len(_t_tail):
+                        _m_tail = _m_tail + _t_tail[len(_m_tail):]
+                    _merged = _t_tokens[:6] + _m_tail
                     if _merged == _t_tokens:
                         continue
                     _res_ide = self.merger.save_vehicle_config(_tm, "vehicles_ide", ", ".join(_merged))

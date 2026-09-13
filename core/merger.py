@@ -99,6 +99,7 @@ class ConfigMerger:
                         "part": pl,
                         "line": line,
                         "price": pr,
+                        "author": True,
                         "desc": f"Register part price ({ntag}): {pl} (${pr})"
                     })
                 else:
@@ -159,8 +160,11 @@ class ConfigMerger:
                         if pname not in parts:
                             parts.append(pname)
                 if parts:
+                    # The package declares this part list: deploy it as-is
+                    # (mirror counterparts move to the link section below).
+                    # Generic upgrades are only preserved when the tool has to
+                    # synthesize the list itself - see the tuning_dffs branch.
                     vehicle_parts = [p for p in parts if not self.tuning_mgr.is_mirror_counterpart(p)]
-                    vehicle_parts = self.merge_generic_carmods_parts(cm_model, vehicle_parts)
                     if vehicle_parts:
                         mods_line = f"{cm_model}, " + ", ".join(vehicle_parts)
                         changes["carmods_dat"]["actions"].append({
@@ -204,6 +208,10 @@ class ConfigMerger:
                     parts.append(pname)
             if parts:
                 vehicle_parts = [p for p in parts if not self.tuning_mgr.is_mirror_counterpart(p)]
+                # No carmods.dat came with the package: the tool builds the
+                # list from the shipped part files, so the vehicle keeps the
+                # generic upgrades its baseline line had instead of silently
+                # losing e.g. its nitro options.
                 vehicle_parts = self.merge_generic_carmods_parts(target_model, vehicle_parts)
                 if vehicle_parts:
                     mods_line = f"{target_model.lower()}, " + ", ".join(vehicle_parts)
@@ -331,6 +339,7 @@ class ConfigMerger:
 
         applied = []
         errors = []
+        shopping_notes = []
 
         # Every file this merge may touch. Files that do not exist yet must be
         # removed again on rollback, because a snapshot can only restore files
@@ -359,6 +368,7 @@ class ConfigMerger:
                         applied.append("shopping.dat")
                     else:
                         errors.append(res["error"])
+                    shopping_notes.extend(res.get("skipped_author_entries") or [])
 
                 # 3. Apply veh_mods.ide
                 ide_actions = plan["changes"]["veh_mods_ide"]["actions"]
@@ -429,6 +439,7 @@ class ConfigMerger:
                 "applied_files": [],
                 "rolled_back": True,
                 "errors": errors,
+                "shopping_notes": shopping_notes,
                 "plan": plan
             }
 
@@ -436,6 +447,7 @@ class ConfigMerger:
             "success": True,
             "applied_files": list(set(applied)),
             "errors": errors,
+            "shopping_notes": shopping_notes,
             "plan": plan
         }
 
@@ -619,12 +631,22 @@ class ConfigMerger:
                         existing_carmods_parts.add(toks[0].lower())
 
         filtered_carmods_actions = []
+        skipped_author_entries = []
         seen_cm = set()
         for a in carmods_actions:
             p = (a.get("part") or "").lower()
-            if p and p not in existing_carmods_parts and p not in seen_cm:
-                seen_cm.add(p)
-                filtered_carmods_actions.append(a)
+            if not p or p in seen_cm:
+                continue
+            if p in existing_carmods_parts:
+                # The part already has a price entry (vanilla or another mod).
+                # Rewriting that shared line is riskier than the rare override
+                # is worth, so the existing values stay - but the caller gets
+                # told instead of the declaration vanishing silently.
+                if a.get("author"):
+                    skipped_author_entries.append(a)
+                continue
+            seen_cm.add(p)
+            filtered_carmods_actions.append(a)
 
         # 2. Parse existing items in each workshop section
         existing_workshop_items = {}
@@ -738,7 +760,7 @@ class ConfigMerger:
                 new_lines.extend(extra_lines)
 
         write_text_atomic(path, new_lines)
-        return {"success": True}
+        return {"success": True, "skipped_author_entries": skipped_author_entries}
 
     def _merge_veh_mods(self, actions: List[Dict[str, Any]]) -> Dict[str, Any]:
         path = os.path.join(self.shadow_dir, "veh_mods.ide")
@@ -1221,6 +1243,7 @@ class ConfigMerger:
         - hydraulics: e.g. ['hydralics']
         - stereo: e.g. ['stereo']
         Only returns parts that were explicitly present in the vehicle's original carmods line.
+        Used when the package ships no carmods.dat list and the tool generates a fallback one.
         """
         model_clean = (model or "").strip().lower()
         res = {"nitro": [], "hydraulics": [], "stereo": []}
@@ -1255,6 +1278,8 @@ class ConfigMerger:
         """
         Strictly preserves original vehicle's generic parts (nitro, hydraulics, stereo)
         if the vehicle originally had them and current parts list does not already contain that category.
+        Only used for generated fallback lists - a list the package declared is
+        deployed verbatim, so an author who drops e.g. nitro is followed.
         """
         orig = self.get_original_generic_carmods_parts(model)
         merged = list(current_parts)
