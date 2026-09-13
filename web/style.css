@@ -4015,3 +4015,14 @@ pre {
   font-family: ui-monospace, Consolas, monospace;
   overflow-wrap: anywhere;
 }
+/* The handling chip guide describes the car parameter set only; on a bike,
+   boat, aircraft or trailer line it is shown disabled instead of guessing. */
+.param-guide-grid span.chip-disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.param-guide-grid span.chip-disabled:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+}

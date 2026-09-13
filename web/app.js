@@ -1571,17 +1571,91 @@ function setupParamGuideInteractive() {
   if (handlingInput && handlingGrid) {
     const handlingSpans = Array.from(handlingGrid.querySelectorAll("span"));
 
-    const updateHandlingGuide = () => {
-      const pos = handlingInput.selectionStart ?? 0;
-      const text = handlingInput.value || "";
-      const textBefore = text.slice(0, pos);
-      const trimmed = textBefore.replace(/^[ \t]+/, "");
-      let tokenIndex = 0;
-      if (trimmed.length > 0) {
-        tokenIndex = trimmed.split(/[ \t]+/).length - 1;
+    // A chip names a *group* of whitespace-separated tokens (centre of mass is
+    // X Y Z, traction is mult/loss/bias, brake is decel/bias/ABS, ...), so token
+    // N is not chip N - and the engine-inertia field between acceleration and
+    // the Drive/Engine pair belongs to no chip at all. The Drive/Engine pair is
+    // located by pattern and every later chip is anchored on it, exactly like
+    // the backend decomposes the same line (core/parser.py decompose_handling).
+    // Bike/boat/plane lines (!/%/$ prefix) have no such pair: they simply get no
+    // highlight instead of a wrongly aligned one.
+    const HANDLING_GUIDE_FIELDS = [
+      { start: 0, size: 1 },      // 1 Identifier
+      { start: 1, size: 1 },      // 2 Mass
+      { start: 2, size: 1 },      // 3 TurnMass
+      { start: 3, size: 1 },      // 4 DragMult
+      { start: 4, size: 3 },      // 5 CenterOfMass [X, Y, Z]
+      { start: 7, size: 1 },      // 6 Submerged %
+      { start: 8, size: 3 },      // 7 Traction [mult, loss, bias]
+      { drive: -4, size: 1 },     // 8 Gears
+      { drive: -3, size: 1 },     // 9 MaxSpeed
+      { drive: -2, size: 1 },     // 10 Acceleration
+      { drive: 0, size: 1 },      // 11 Drive [F/R/4]
+      { drive: 1, size: 1 },      // 12 Engine [P/D/E]
+      { drive: 2, size: 3 },      // 13 Brake [decel, bias, ABS]
+      { drive: 5, size: 1 },      // 14 SteerAngle
+    ];
+
+    const handlingTokens = () => Array.from((handlingInput.value || "").matchAll(/\S+/g));
+
+    // The fourteen chips describe the car parameter set only; a bike/boat/
+    // aircraft/trailer line has a different layout, so the guide steps aside
+    // instead of pointing at fields it does not know.
+    const handlingLineIsSecondary = text => {
+      const trimmed = (text || "").trim();
+      return Boolean(trimmed) && '!$%^'.includes(trimmed[0]);
+    };
+
+    const handlingDriveIndex = tokens => {
+      for (let i = 10; i < Math.min(25, tokens.length - 1); i++) {
+        if (/^[FR4]$/i.test(tokens[i][0]) && /^[PDE]$/i.test(tokens[i + 1][0])) return i;
       }
+      return -1;
+    };
+
+    const handlingFieldRange = (field, driveIdx) => {
+      const start = field.drive === undefined ? field.start : driveIdx + field.drive;
+      return start < 0 ? null : { start, end: start + field.size - 1 };
+    };
+
+    const handlingChipForToken = (tokenIndex, tokens) => {
+      const driveIdx = handlingDriveIndex(tokens);
+      if (driveIdx < 0) return -1;
+      for (let chip = 0; chip < HANDLING_GUIDE_FIELDS.length; chip++) {
+        const range = handlingFieldRange(HANDLING_GUIDE_FIELDS[chip], driveIdx);
+        if (range && tokenIndex >= range.start && tokenIndex <= range.end) return chip;
+      }
+      return -1;
+    };
+
+    // The caret belongs to the token it sits in; inside the whitespace between
+    // two tokens it belongs to the one that just ended. Selecting a field starts
+    // at the token's first character, so both directions agree on the same chip.
+    const handlingTokenAt = (text, pos) => {
+      const tokens = Array.from(text.matchAll(/\S+/g));
+      for (let i = 0; i < tokens.length; i++) {
+        const start = tokens[i].index;
+        if (pos >= start && pos <= start + tokens[i][0].length) return { index: i, tokens };
+      }
+      let previous = -1;
+      for (let i = 0; i < tokens.length; i++) {
+        if (tokens[i].index + tokens[i][0].length <= pos) previous = i; else break;
+      }
+      return { index: previous, tokens };
+    };
+
+    const updateHandlingGuide = () => {
+      const text = handlingInput.value || "";
+      const secondary = handlingLineIsSecondary(text);
+      const pos = handlingInput.selectionStart ?? 0;
+      const { index, tokens } = handlingTokenAt(text, pos);
+      const chip = secondary ? -1 : handlingChipForToken(index, tokens);
       handlingSpans.forEach((span, i) => {
-        const isActive = (i === tokenIndex);
+        span.classList.toggle("chip-disabled", secondary);
+        span.title = secondary
+          ? window.t("inspect.guideCarOnly", "This guide describes car parameters; this vehicle uses a different physics layout")
+          : window.t("inspect.guideClickToJump", "Click to jump and select this parameter field");
+        const isActive = (i === chip);
         span.classList.toggle("active-item", isActive);
         span.classList.toggle("highlight", isActive);
       });
@@ -1598,17 +1672,21 @@ function setupParamGuideInteractive() {
       }
     });
 
-    handlingSpans.forEach((span, targetIdx) => {
+    handlingSpans.forEach((span, chipIndex) => {
       span.title = window.t("inspect.guideClickToJump", "Click to jump and select this parameter field");
       span.addEventListener("click", () => {
-        const val = handlingInput.value || "";
-        const matches = [...val.matchAll(/\S+/g)];
-        if (targetIdx < matches.length) {
-          const match = matches[targetIdx];
-          handlingInput.focus();
-          handlingInput.setSelectionRange(match.index, match.index + match[0].length);
-          updateHandlingGuide();
-        }
+        if (handlingLineIsSecondary(handlingInput.value)) return;
+        const tokens = handlingTokens();
+        const driveIdx = handlingDriveIndex(tokens);
+        if (driveIdx < 0) return;
+        const range = handlingFieldRange(HANDLING_GUIDE_FIELDS[chipIndex], driveIdx);
+        if (!range || range.start >= tokens.length) return;
+        // Select the group's first token only: replacing a three-token vector
+        // with a single typed number would shift every following field.
+        const target = tokens[range.start];
+        handlingInput.focus();
+        handlingInput.setSelectionRange(target.index, target.index + target[0].length);
+        updateHandlingGuide();
       });
     });
   }
@@ -1904,8 +1982,13 @@ let currentIsAddonVehicle = false;
 
 function parseHandlingLine(rawLine) {
   if (!rawLine) return null;
-  let clean = rawLine.split(';')[0].split('//')[0].trim();
-  if (clean.startsWith('!') || clean.startsWith('$')) clean = clean.slice(1).trim();
+  const clean = rawLine.split(';')[0].split('//')[0].trim();
+  // Bikes (!), boats (%), aircraft ($) and trailers (^) use their own shorter
+  // physics layout: the car fields below do not describe them, so no car-field
+  // preview is produced (core/parser.py splits the same way and reports
+  // is_secondary for those lines). Testing the prefix also closes the boundary
+  // where a long prefixed line used to slip through the length gate below.
+  if (clean && '!$%^'.includes(clean[0])) return null;
   const parts = clean.split(/\s+/).filter(Boolean);
   if (parts.length < 20) return null;
   let driveIdx = -1;
@@ -2032,6 +2115,24 @@ function renderHandlingPreview(h, vanillaH = currentVanillaHandling, isAddon = c
     "D": loc({ en: "Diesel" }),
     "E": loc({ en: "Electric" })
   };
+
+  if (h && h.is_secondary) {
+    // Motorcycles, boats, aircraft and trailers carry the game's own physics
+    // layout. The car stats below would render as "undefined", so the card
+    // states what the line is instead of pretending to decompose it; editing
+    // and saving still write the raw line straight into handling.cfg.
+    const kind = { "!": "bike", "%": "boat", "$": "plane", "^": "trailer" }[h.prefix] || "";
+    if (hBadge) {
+      const label = kind ? window.t("veh." + kind, kind) : window.t("veh.car", "Car");
+      hBadge.innerHTML = `${label} · ${window.t("inspect.secondaryPhysicsTag", "separate physics")}`;
+    }
+    if (hDiv) {
+      hDiv.innerHTML = `
+        <p class="field-hint" data-i18n="inspect.secondaryPhysicsHint">${window.t("inspect.secondaryPhysicsHint", "This vehicle uses the game's own physics layout for motorcycles, boats, aircraft and trailers, so its fields are not the car parameter set. The line is shown as it is; the editor below still saves it straight into handling.cfg.")}</p>
+      `;
+    }
+    return;
+  }
 
   if (h && h.valid) {
     const dText = driveMap[h.drive_type] || (window.I18N ? window.I18N.pick(h, "drive_type_label") : "") || h.drive_type_label || h.drive_type;
