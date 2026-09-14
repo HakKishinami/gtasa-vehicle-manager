@@ -4908,6 +4908,25 @@ function updateInstallChecklistSummary() {
   el.textContent = on.length ? on.join(" · ") : window.t("install.checklistNone", "Nothing selected");
 }
 
+function refreshFxtInheritHint() {
+  const hint = document.getElementById("installFxtInheritHint");
+  if (!hint) return;
+  const wv = (wizardVehicles && wizardVehicles.length > 1) ? wizardVehicles[wizardCurrentIndex] : null;
+  const proposal = wv
+    ? { inherited: wv.fxt_inherited, key: wv.fxt_inherit_key }
+    : { inherited: singleFxtInherited, key: singleFxtInheritKey };
+  const keyEl = document.getElementById("installFxtKey");
+  const nameEl = document.getElementById("installFxtName");
+  const overridden = Boolean((keyEl && keyEl.value.trim()) || (nameEl && nameEl.value.trim()));
+  const show = Boolean(proposal.inherited) && !overridden;
+  hint.style.display = show ? "block" : "none";
+  if (show) {
+    hint.textContent = window.t("install.fxtInheritHint",
+      "Package reuses the game's own GXT entry ({0}); no name override will be written.")
+      .replace("{0}", proposal.key || "");
+  }
+}
+
 async function inspectModSource(sourcePath) {
   window.InstallAssets.reset();
   const step1 = document.getElementById("installStep1");
@@ -5005,6 +5024,10 @@ function isAddonModel(m) {
 // ---------------- Install mode: replace vs addon conversion ----------------
 
 let singleInstallMode = "replace";
+// Single-install FXT state: a package that reuses the game's own GXT entry
+// keeps both FXT fields empty and writes no name override.
+let singleFxtInherited = false;
+let singleFxtInheritKey = "";
 
 function installTargetSourceModel() {
   if (wizardVehicles && wizardVehicles.length > 1 && wizardVehicles[wizardCurrentIndex]) {
@@ -5330,14 +5353,19 @@ function setInstallMode(mode, opts = {}) {
     }
 
     const fxtKey = document.getElementById("installFxtKey");
+    // A vehicle that inherits the game's own GXT entry keeps both FXT fields
+    // empty (no rename is written), so nothing may auto-fill them here.
+    const fxtInherited = (wizard && wv && wv.fxt_inherited) || (!wizard && singleFxtInherited);
     if (fxtKey) {
-      if (opts.keepName && wizard && wv && wv.fxt_key) {
+      if (fxtInherited) {
+        fxtKey.value = "";
+      } else if (opts.keepName && wizard && wv && wv.fxt_key) {
         fxtKey.value = wv.fxt_key;
       } else if (!fxtKey.value.trim() || fxtKey.value.trim().toLowerCase() === src) {
         fxtKey.value = newName.toUpperCase().slice(0, 7);
       }
     }
-    if (wizard && wv && fxtKey) wv.fxt_key = fxtKey.value.trim().toUpperCase();
+    if (wizard && wv && fxtKey && !fxtInherited) wv.fxt_key = fxtKey.value.trim().toUpperCase();
     syncDefaultCategoryToTarget(newName);
   } else if (wizard && wv) {
     if (select && (!select.value || isAddonModel(select.value))) {
@@ -5504,11 +5532,17 @@ function setupInstallModeControls() {
         wizardVehicles[wizardCurrentIndex].target_model = val;
         wizardVehicles[wizardCurrentIndex].target_txd = (document.getElementById("installNewTxdName") || {}).value
           ? document.getElementById("installNewTxdName").value.trim().toLowerCase() : val;
-        wizardVehicles[wizardCurrentIndex].fxt_key = val.toUpperCase().slice(0, 7);
+        // A vehicle that inherits the game's own GXT entry keeps its GXT key
+        // empty, so renaming must not fill it back in.
+        if (!wizardVehicles[wizardCurrentIndex].fxt_inherited) {
+          wizardVehicles[wizardCurrentIndex].fxt_key = val.toUpperCase().slice(0, 7);
+        }
         if (hAuto) wizardVehicles[wizardCurrentIndex].target_handling = hAuto.value;
       }
       const fxtKey = document.getElementById("installFxtKey");
-      if (fxtKey && (!fxtKey.value.trim() || fxtKey.value.trim().length <= val.length)) {
+      const inheritsFxtKey = Boolean(wizardVehicles && wizardVehicles.length > 1
+        && wizardVehicles[wizardCurrentIndex] && wizardVehicles[wizardCurrentIndex].fxt_inherited);
+      if (fxtKey && !inheritsFxtKey && (!fxtKey.value.trim() || fxtKey.value.trim().length <= val.length)) {
         fxtKey.value = val.toUpperCase().slice(0, 7);
       }
       const renameHint = document.getElementById("installModelRenameHint");
@@ -5532,6 +5566,10 @@ function setupInstallModeControls() {
       validateNewInstallName();
     });
   }
+  const fxtKeyInput = document.getElementById("installFxtKey");
+  if (fxtKeyInput) fxtKeyInput.addEventListener("input", refreshFxtInheritHint);
+  const fxtNameInput = document.getElementById("installFxtName");
+  if (fxtNameInput) fxtNameInput.addEventListener("input", refreshFxtInheritHint);
   const hInput = document.getElementById("installNewHandlingId");
   if (hInput) {
     hInput.addEventListener("input", () => {
@@ -5950,6 +5988,7 @@ function loadWizardVehicleToForm(targetIdx, skipSync = false) {
 
   const fxtName = document.getElementById("installFxtName");
   if (fxtName) fxtName.value = v.fxt_name;
+  refreshFxtInheritHint();
 
   // Update Checkboxes
   const chkCopy = document.getElementById("chkCopyFiles");
@@ -6525,6 +6564,8 @@ function renderInstallStep2(data) {
       // An addon keeps the TXD the author declared in vehicles.ide; only when
       // the package declares none does the name default to the model itself.
       const declaredTxd = String(tv.declared_txd || "").toLowerCase();
+      const fxtProposal = tv.fxt_proposal || {};
+      const fxtInherited = Boolean(fxtProposal.inherited);
       return {
         index: idx,
         source_model: (tv.source_model || tv.model || "").toLowerCase(),
@@ -6535,15 +6576,19 @@ function renderInstallStep2(data) {
         folder_name: "",
         category: "",
         vanilla_name: vMatch ? vMatch.name : (tv.name || model.toUpperCase()),
-        fxt_key: ((tv.fxt_proposal && tv.fxt_proposal.key) || model.toUpperCase()).slice(0, 7),
-        fxt_key_auto: ((tv.fxt_proposal && tv.fxt_proposal.key) || model.toUpperCase()).slice(0, 7),
-        fxt_name: (tv.fxt_proposal && tv.fxt_proposal.name) || (vMatch ? vMatch.name : data.proposed_folder_name),
+        // A package that points at a key the game already defines inherits that
+        // display name: leave both fields empty and write no .fxt override.
+        fxt_inherited: fxtInherited,
+        fxt_inherit_key: fxtProposal.key || "",
+        fxt_key: fxtInherited ? "" : (fxtProposal.key || model.toUpperCase()).slice(0, 7),
+        fxt_key_auto: fxtInherited ? "" : (fxtProposal.key || model.toUpperCase()).slice(0, 7),
+        fxt_name: fxtInherited ? "" : (fxtProposal.name || (vMatch ? vMatch.name : data.proposed_folder_name)),
         copy_files: true,
         merge_handling: tv.has_handling !== false,
         merge_carcols: tv.has_carcols !== false,
         merge_carmods: tv.has_carmods !== false,
         generate_shopping: true,
-        generate_fxt: true,
+        generate_fxt: !fxtInherited,
         merge_fla: true,
         tuning_id_assignments: {},
         skip: Boolean(tv.alternative_of),
@@ -6610,15 +6655,20 @@ function renderInstallStep2(data) {
     if (btnPrev) btnPrev.style.display = "none";
     if (btnNext) btnNext.style.display = "none";
 
-    document.getElementById("installFxtKey").value = (data.fxt_proposal.key || defaultModel.toUpperCase()).slice(0, 7);
-    document.getElementById("installFxtName").value = data.fxt_proposal.name || data.proposed_folder_name;
+    const singleFxt = data.fxt_proposal || {};
+    const singleFxtInheritedHere = Boolean(singleFxt.inherited);
+    singleFxtInherited = singleFxtInheritedHere;
+    singleFxtInheritKey = singleFxt.key || "";
+    document.getElementById("installFxtKey").value = singleFxtInheritedHere ? "" : (singleFxt.key || defaultModel.toUpperCase()).slice(0, 7);
+    document.getElementById("installFxtName").value = singleFxtInheritedHere ? "" : (singleFxt.name || data.proposed_folder_name);
     document.getElementById("chkCopyFiles").checked = true;
     document.getElementById("chkMergeHandling").checked = true;
     document.getElementById("chkMergeCarcols").checked = true;
     document.getElementById("chkMergeCarmods").checked = true;
     document.getElementById("chkGenShopping").checked = true;
-    document.getElementById("chkGenFxt").checked = true;
+    document.getElementById("chkGenFxt").checked = !singleFxtInheritedHere;
     document.getElementById("chkMergeFla").checked = true;
+    refreshFxtInheritHint();
 
     // Single install: initialize replace/addon mode and name fields.
     const singleIsAddon = isAddonModel(defaultModel);

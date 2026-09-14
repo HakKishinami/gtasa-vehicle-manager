@@ -4377,6 +4377,105 @@ class CarmodsDeclarationRegression(unittest.TestCase):
         self.assertIn("nto_b_l", line)
 
 
+class VanillaGxtReuseRegression(unittest.TestCase):
+    """A package that points a new model at a key the game already defines
+    (e.g. "ID, buffsux, buffsux, car, BUFFSUX, BUFFALO, ...") inherits that
+    display name: the wizard must not prefill GXT/name fields, no .fxt override
+    may be written, and installing the pack must not fail on a key clash."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="gxt_reuse_")
+        self.addCleanup(self.temp.cleanup)
+        self.game = Path(self.temp.name) / "game"
+        (self.game / "data").mkdir(parents=True)
+        (self.game / "gta_sa.exe").write_bytes(b"x")
+        (self.game / "data" / "vehicles.ide").write_text(
+            "cars\n402, buffalo, buffalo, car, BUFFALO, BUFFALO, null, richfamily, 5, 0, 0, -1, 0.74, 0.74, 0\nend\n",
+            encoding="utf-8")
+        (self.game / "data" / "handling.cfg").write_text("; h\n" + handling("BUFFALO") + "\n", encoding="utf-8")
+        (self.game / "data" / "carcols.dat").write_text("car\nbuffalo, 91, 32\nend\n", encoding="utf-8")
+        (self.game / "data" / "carmods.dat").write_text("mods\nbuffalo, nto_b_l\nend\n", encoding="utf-8")
+        (self.game / "data" / "shopping.dat").write_text(
+            "section prices\nsection CarMods\nnto_b_l BMBLN respect 0 sexy 0 500\nend\nend\n", encoding="utf-8")
+        vm_dir = self.game / "data" / "maps" / "veh_mods"
+        vm_dir.mkdir(parents=True, exist_ok=True)
+        (vm_dir / "veh_mods.ide").write_text("objs\n1000, nto_b_l, buffalo, 100, 2097152\nend\n", encoding="utf-8")
+        self.shadow = self.game / "modloader" / "Modded Cars"
+        self.source = Path(self.temp.name) / "Buffalo Pack"
+        self.source.mkdir()
+        for name in ("buffalo", "buffsux"):
+            (self.source / f"{name}.dff").write_bytes(b"dff")
+            (self.source / f"{name}.txd").write_bytes(b"txd")
+        self.backup = BackupManager(backup_dir=str(Path(self.temp.name) / "backups"), game_dir=str(self.game))
+        self.installer = ModInstaller(str(self.game), "Modded Cars", backup_manager=self.backup)
+
+    def write_readme(self, game_name="BUFFALO"):
+        (self.source / "readme.txt").write_text(
+            "vehicles.ide\n"
+            "402, \tbuffalo, \tbuffalo, \tcar, \t\tBUFFALO, \tBUFFALO, \tnull,\t\t\trichfamily,\t\t5, \t0,\t0,\t\t\t-1, 0.74, 0.74,\t\t0\n"
+            f"ID, \tbuffsux, \tbuffsux, \tcar, \t\tBUFFSUX, \t{game_name}, \tnull,\t\t\tpoorfamily,\t\t7, \t0,\t0,\t\t\t-1, 0.74, 0.74,\t\t0\n",
+            encoding="utf-8")
+
+    def ui_payload(self, models):
+        """Payload the fixed wizard sends: inherited vehicles carry empty
+        GXT/name fields and have FXT generation switched off."""
+        vehicles = []
+        for model in models:
+            vehicles.append({
+                "source_model": model, "target_model": model,
+                "category": "Addon Cars" if model == "buffsux" else "Modded Cars",
+                "target_txd": "", "merge_fla": False,
+                "generate_fxt": False, "fxt_key": "", "fxt_name": "",
+            })
+        return {"inspect_dir": str(self.source), "target_category": "Modded Cars",
+                "folder_name": "BuffaloPack", "vehicles": vehicles}
+
+    def fxt_files(self):
+        return [str(p) for p in (self.game / "modloader").rglob("*.fxt")]
+
+    def installed_line(self, model):
+        text = (self.shadow / "vehicles.ide").read_text(encoding="utf-8-sig")
+        return next(l for l in text.splitlines() if f", {model}," in l or f"\t{model}," in l)
+
+    def test_inspection_marks_the_vanilla_key_as_inherited(self):
+        self.write_readme()
+        inspection = self.installer.inspect_source(str(self.source))
+        self.assertTrue(inspection["success"], inspection)
+        by_model = {v["model"]: v for v in inspection["target_vehicles"]}
+        self.assertTrue(by_model["buffsux"]["fxt_proposal"]["inherited"])
+        self.assertEqual(by_model["buffsux"]["fxt_proposal"]["key"], "BUFFALO")
+        self.assertEqual(by_model["buffsux"]["fxt_proposal"]["name"], "Buffalo")
+
+    def test_addon_reusing_a_vanilla_key_writes_no_fxt(self):
+        self.write_readme()
+        res = self.installer.execute_install(self.ui_payload(["buffsux"]))
+        self.assertTrue(res["success"], res)
+        self.assertEqual(self.fxt_files(), [])
+        self.assertIn("BUFFALO", self.installed_line("buffsux"))
+
+    def test_whole_pack_installs_without_a_key_clash(self):
+        self.write_readme()
+        res = self.installer.execute_install(self.ui_payload(["buffalo", "buffsux"]))
+        self.assertTrue(res["success"], res.get("error"))
+        self.assertEqual(self.fxt_files(), [])
+
+    def test_declared_custom_key_still_generates_an_fxt(self):
+        self.write_readme(game_name="MYCUST")
+        inspection = self.installer.inspect_source(str(self.source))
+        by_model = {v["model"]: v for v in inspection["target_vehicles"]}
+        self.assertFalse(by_model["buffsux"]["fxt_proposal"]["inherited"])
+        res = self.installer.execute_install({
+            "inspect_dir": str(self.source), "target_category": "Modded Cars", "folder_name": "BuffaloPack",
+            "vehicles": [{"source_model": "buffsux", "target_model": "buffsux", "category": "Addon Cars",
+                          "addon_id": 12093, "target_txd": "", "merge_fla": False,
+                          "generate_fxt": True, "fxt_key": "MYCUST", "fxt_name": "Buffalo SUX"}],
+        })
+        self.assertTrue(res["success"], res)
+        written = self.fxt_files()
+        self.assertEqual(len(written), 1, written)
+        self.assertIn("MYCUST Buffalo SUX", Path(written[0]).read_text(encoding="utf-8-sig"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

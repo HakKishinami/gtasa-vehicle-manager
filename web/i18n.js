@@ -534,6 +534,7 @@ window.I18N_DICTIONARY = {
     "install.cardFxtTitle": "In-game name",
     "install.fxtKeyLabel": "GXT key",
     "install.fxtNameLabel": "In-game name",
+    "install.fxtInheritHint": "Package reuses the game's own GXT entry ({0}); no name override will be written.",
     "install.fxtHint": "ModLoader loads the matching .fxt file as the in-game name.",
     "install.cardComponentsTitle": "Pack contents",
     "install.cardVariantTitle": "Versions",

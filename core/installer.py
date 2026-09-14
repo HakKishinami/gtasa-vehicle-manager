@@ -15,7 +15,7 @@ import tempfile
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
-from .parser import DualTrackParser, read_text_file_safe
+from .parser import DualTrackParser, read_text_file_safe, normalize_ide_line
 from .merger import ConfigMerger
 from .tuning_manager import TuningManager, determine_veh_mod_flags
 from .fla_manager import FLAManager
@@ -318,11 +318,36 @@ class ModInstaller:
         self.staging_base = os.path.join(tempfile.gettempdir(), "gtasa_installer_staging")
         os.makedirs(self.staging_base, exist_ok=True)
         self._preview_sessions = {}
+        self._vanilla_gxt_names_cache: Optional[Dict[str, str]] = None
 
     def set_data_folder(self, data_folder: str):
         self.data_folder = data_folder
         self.shadow_dir = os.path.join(self.game_path, "modloader", self.data_folder)
         self.merger = ConfigMerger(self.shadow_dir, self.game_path, backup_manager=self.backup_manager)
+
+    def _vanilla_gxt_names(self) -> Dict[str, str]:
+        """GXT key -> in-game display name for the game's own vehicles.
+
+        Read from the vanilla data/vehicles.ide (game name column) so a package
+        that points its model at an existing key (e.g. an addon reusing
+        "BUFFALO") is recognized as inheriting that entry instead of renaming
+        it to the new model name. Empty when the game data is unavailable.
+        """
+        if self._vanilla_gxt_names_cache is None:
+            names: Dict[str, str] = {}
+            try:
+                ide_path = os.path.join(self.game_path, "data", "vehicles.ide")
+                for line in read_text_file_safe(ide_path).splitlines():
+                    toks = [t.strip() for t in normalize_ide_line(line).split(",")]
+                    if len(toks) < 6 or not toks[1] or not toks[5]:
+                        continue
+                    info = VANILLA_VEHICLES.get(MODEL_TO_ID.get(toks[1].lower()))
+                    if info:
+                        names.setdefault(toks[5].upper(), info.get("name") or toks[1].upper())
+            except Exception:
+                names = {}
+            self._vanilla_gxt_names_cache = names
+        return self._vanilla_gxt_names_cache
 
     # ---------------- Archive Extraction ----------------
 
@@ -707,6 +732,7 @@ class ModInstaller:
             v_fxt_name = ""
             v_has_author_fxt = False
             v_fxt_file = ""
+            v_inherits_vanilla_key = False
 
             # Check authoritative on-disk .fxt files first
             if v_fxt_key in author_fxt_entries:
@@ -736,7 +762,16 @@ class ModInstaller:
                         break
 
             if not v_fxt_name:
-                v_fxt_name = v.get("name", m.upper())
+                _vanilla_entry_name = self._vanilla_gxt_names().get(v_fxt_key, "")
+                if _vanilla_entry_name:
+                    # The package points its model at a key the game already
+                    # defines: it inherits that display name, so nothing is
+                    # invented and no .fxt override is written (the wizard
+                    # leaves its GXT/name fields empty for this vehicle).
+                    v_fxt_name = _vanilla_entry_name
+                    v_inherits_vanilla_key = True
+                else:
+                    v_fxt_name = v.get("name", m.upper())
             elif v.get("is_addon") and v_has_author_fxt:
                 v["name"] = v_fxt_name
 
@@ -744,7 +779,8 @@ class ModInstaller:
                 "key": v_fxt_key,
                 "name": v_fxt_name,
                 "has_author_fxt": v_has_author_fxt,
-                "fxt_file": v_fxt_file
+                "fxt_file": v_fxt_file,
+                "inherited": v_inherits_vanilla_key
             }
 
             # Config flags (handling falls back to the shared physics ID from
