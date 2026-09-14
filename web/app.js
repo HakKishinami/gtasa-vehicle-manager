@@ -4504,8 +4504,14 @@ function setupInstaller() {
   if (wizFolderInp) {
     wizFolderInp.addEventListener("input", () => {
       if (wizardVehicles && wizardVehicles.length > 1 && wizardVehicles[wizardCurrentIndex]) {
-        wizardVehicles[wizardCurrentIndex].folder_name = wizFolderInp.value.trim();
-        updateInstallPathPreview();
+        const val = wizFolderInp.value.trim();
+        wizardVehicles[wizardCurrentIndex].folder_name = val;
+        const subInp = document.getElementById("installSubfolderName");
+        if (subInp && document.activeElement !== subInp) {
+          const r = wizardResolvedFolder();
+          subInp.value = val || (r ? r.shared : "");
+        }
+        updateInstallPathPreview(true);
       }
     });
   }
@@ -4853,8 +4859,22 @@ function setupInstaller() {
     updateInstallPathPreview();
   });
   if (subfolderInput) subfolderInput.addEventListener("input", () => {
-    persistCurrentPhaseDest();
-    updateInstallPathPreview();
+    if (wizardVehicles && wizardVehicles.length > 1 && wizardVehicles[wizardCurrentIndex]) {
+      const cur = wizardVehicles[wizardCurrentIndex];
+      const val = subfolderInput.value.trim();
+      if (cur.folder_name) {
+        cur.folder_name = val;
+        const wizFolder = document.getElementById("installWizardCarFolder");
+        if (wizFolder && document.activeElement !== wizFolder) {
+          wizFolder.value = val;
+        }
+      } else {
+        persistCurrentPhaseDest();
+      }
+    } else {
+      persistCurrentPhaseDest();
+    }
+    updateInstallPathPreview(true);
   });
 
   document.querySelectorAll("#installChecklistFold input[type=checkbox]").forEach(cb => {
@@ -5880,10 +5900,11 @@ function sharedDeployInputs() {
 
 function phaseSharedInputs(phase) {
   const live = sharedDeployInputs();
-  if (!phase || !hasBothPhases() || !phaseDest[phase]) return live;
+  if (!phase || !phaseDest[phase]) return live;
   // Live form is the source of truth only for the phase currently shown
-  // on the left card (user may be typing). Other phases use their snapshot.
-  if (phase === displayedDestPhase) return live;
+  // on the left card (user may be typing in shared mode).
+  const curWv = (wizardVehicles && wizardVehicles[wizardCurrentIndex]);
+  if (phase === displayedDestPhase && (!curWv || !curWv.folder_name)) return live;
   const pd = phaseDest[phase];
   return {
     cat: (pd.category || "").trim() || live.cat,
@@ -5956,6 +5977,11 @@ function refreshWizardFolderPreview(preserveInputs = false) {
     : window.t("install.perCarFolderShared", "shared");
   const mid = r.author ? ` / ${r.author}` : "";
   prev.innerHTML = `modloader / ${r.cat}${mid} / <b style="color:var(--accent-emerald);">${r.sub}</b> (${tag})`;
+
+  const subInp = document.getElementById("installSubfolderName");
+  if (subInp && !preserveInputs && document.activeElement !== subInp) {
+    subInp.value = wv.folder_name || r.shared || "";
+  }
 }
 
 function loadWizardVehicleToForm(targetIdx, skipSync = false) {
@@ -6250,10 +6276,14 @@ function savePhaseDest(phase) {
   const cat = document.getElementById("installCategorySelect");
   const author = document.getElementById("installAuthorFolder");
   const sub = document.getElementById("installSubfolderName");
+  const curWv = (wizardVehicles && wizardVehicles[wizardCurrentIndex]);
+  const subVal = (curWv && curWv.folder_name)
+    ? (phaseDest[phase].subfolder || "")
+    : (sub ? sub.value : "");
   phaseDest[phase] = {
     category: cat ? cat.value : "",
     author: author ? author.value : "",
-    subfolder: sub ? sub.value : ""
+    subfolder: subVal
   };
 }
 
@@ -6269,7 +6299,10 @@ function loadPhaseDest(phase) {
     refreshInstallAuthors(d.category);
   }
   if (author) author.value = d.author || "";
-  if (sub) sub.value = d.subfolder || "";
+  const curWv = (wizardVehicles && wizardVehicles[wizardCurrentIndex]);
+  if (sub) {
+    sub.value = (curWv && curWv.folder_name) ? curWv.folder_name : (d.subfolder || "");
+  }
   refreshDestPhaseBadge();
   updateInstallPathPreview();
 }
@@ -6576,7 +6609,7 @@ function renderInstallStep2(data) {
     if (tuningCard) tuningCard.style.display = "block";
     if (tuningBadge) tuningBadge.textContent = window.t("install.partsCount", "{0} parts").replace("{0}", customParts.length);
     const hasConflict = customParts.some(p => p.is_conflict);
-    if (conflictAlert) conflictAlert.style.display = hasConflict ? "block" : "none";
+    if (conflictAlert) conflictAlert.style.display = "none";
   } else {
     if (tuningCard) tuningCard.style.display = "none";
   }
@@ -6647,17 +6680,14 @@ function renderInstallStep2(data) {
     // shared destination. Addon cars follow the Addon folder by default;
     // replace cars follow Modded Cars. Switching vehicles/tabs swaps the
     // left destination card so it always matches the phase in view.
+    const authorVal = (authorInput && authorInput.value) || "";
+    const subVal = data.proposed_folder_name || "";
+    phaseDest.replace = { category: sharedCatNow, author: authorVal, subfolder: subVal };
+    phaseDest.addon = { category: addonCatName || sharedCatNow, author: authorVal, subfolder: subVal };
     if (hasBothPhases()) {
-      const authorVal = (authorInput && authorInput.value) || "";
-      const subVal = data.proposed_folder_name || "";
-      phaseDest.replace = { category: sharedCatNow, author: authorVal, subfolder: subVal };
-      phaseDest.addon = { category: addonCatName || sharedCatNow, author: authorVal, subfolder: subVal };
       ensureCategoryOption(catSelect, addonCatName);
       displayedDestPhase = "replace";
       loadPhaseDest("replace");
-    } else {
-      phaseDest.replace = { category: "", author: "", subfolder: "" };
-      phaseDest.addon = { category: "", author: "", subfolder: "" };
     }
     if (wizardBar) wizardBar.style.display = "block";
     if (btnPrev) btnPrev.style.display = "inline-block";
@@ -6937,7 +6967,7 @@ function updateTuningSelectionSummary() {
   }
   const alert = document.getElementById("installTuningConflictAlert");
   if (alert) {
-    alert.style.display = conflicts.length ? "block" : "none";
+    alert.style.display = "none";
     alert.textContent = window.t("install.tuningResolve", "Resolve the highlighted tuning IDs, auto-assign, or uncheck those parts to continue.");
   }
   const execute = document.getElementById("btnExecuteInstall");

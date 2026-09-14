@@ -3182,6 +3182,8 @@ pre {
 }
 
 .tuning-id-table {
+  width: 100%;
+  table-layout: fixed;
   min-width: 720px;
 }
 
@@ -3189,6 +3191,11 @@ pre {
 .tuning-id-table td {
   padding: 6px 10px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  white-space: nowrap;
+}
+
+.tuning-status-cell {
+  width: 210px;
   white-space: nowrap;
 }
 

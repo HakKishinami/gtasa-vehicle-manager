@@ -530,6 +530,7 @@ class ModInstaller:
         # Collect all target vehicles
         target_vehicles = []
         seen_models = set()
+        primary_dff_models = {f["model"].lower() for f in primary_dffs if f.get("model")}
 
         for pd in primary_dffs:
             m = pd["model"]
@@ -543,48 +544,18 @@ class ModInstaller:
                     "is_addon": False
                 })
 
-        for h_line in parsed_config["handling_cfg"]:
-            tokens = h_line.split()
-            if tokens:
-                m = tokens[0].lstrip("!$%").lower()
-                if not m and len(tokens) > 1:
-                    m = tokens[1].lstrip("!$%").lower()
-                if m in MODEL_TO_ID and m not in seen_models:
-                    seen_models.add(m)
-                    v_info = VANILLA_VEHICLES[MODEL_TO_ID[m]]
-                    target_vehicles.append({
-                        "model": m,
-                        "id": MODEL_TO_ID[m],
-                        "name": v_info["name"],
-                        "is_addon": False
-                    })
-
-        for ide_line in parsed_config["vehicles_ide"]:
-            tokens = [t.strip() for t in ide_line.split(",")]
-            if len(tokens) >= 2:
-                m = tokens[1].lower()
-                if m in MODEL_TO_ID and m not in seen_models:
-                    seen_models.add(m)
-                    v_info = VANILLA_VEHICLES[MODEL_TO_ID[m]]
-                    target_vehicles.append({
-                        "model": m,
-                        "id": MODEL_TO_ID[m],
-                        "name": v_info["name"],
-                        "is_addon": False
-                    })
-
-        # Addon candidates missed above: non-vanilla models declared by IDE
-        # lines (numeric or placeholder ID) or present as model files on disk.
-        # Without this, mixed replace+addon packs (e.g. rancher pack with
-        # ranchxlt/agitator on "ID," placeholders) only expose the replace
-        # half and the addon half can never be installed.
         ide_by_raw_model = {}
         for ide_line in parsed_config["vehicles_ide"]:
             toks = [t.strip() for t in ide_line.split(",")]
             if len(toks) >= 2 and toks[1]:
                 ide_by_raw_model.setdefault(toks[1].lower(), ide_line)
+
+        # Addon candidates: non-vanilla models declared by IDE lines
         for m, ide_line in ide_by_raw_model.items():
             if m in seen_models or m in MODEL_TO_ID:
+                continue
+            # When the package provides 3D models, do not add ghost addons that have no DFF on disk
+            if primary_dffs and m not in primary_dff_models:
                 continue
             toks = [t.strip() for t in ide_line.split(",")]
             try:
@@ -606,6 +577,74 @@ class ModInstaller:
                 target_vehicles.append({
                     "model": m,
                     "id": None,
+                    "name": m.upper(),
+                    "is_addon": True
+                })
+
+        # Fallback for packages with NO 3D models (data-only or texture-only mods)
+        if not primary_dffs:
+            for pt in primary_txds:
+                m = pt["model"]
+                if m in MODEL_TO_ID and m not in seen_models:
+                    seen_models.add(m)
+                    v_info = VANILLA_VEHICLES[MODEL_TO_ID[m]]
+                    target_vehicles.append({
+                        "model": m,
+                        "id": MODEL_TO_ID[m],
+                        "name": v_info["name"],
+                        "is_addon": False
+                    })
+                elif m not in seen_models:
+                    seen_models.add(m)
+                    target_vehicles.append({
+                        "model": m,
+                        "id": None,
+                        "name": m.upper(),
+                        "is_addon": True
+                    })
+
+            for h_line in parsed_config["handling_cfg"]:
+                tokens = h_line.split()
+                if tokens:
+                    m = tokens[0].lstrip("!$%").lower()
+                    if not m and len(tokens) > 1:
+                        m = tokens[1].lstrip("!$%").lower()
+                    if m in MODEL_TO_ID and m not in seen_models:
+                        seen_models.add(m)
+                        v_info = VANILLA_VEHICLES[MODEL_TO_ID[m]]
+                        target_vehicles.append({
+                            "model": m,
+                            "id": MODEL_TO_ID[m],
+                            "name": v_info["name"],
+                            "is_addon": False
+                        })
+
+            for ide_line in parsed_config["vehicles_ide"]:
+                tokens = [t.strip() for t in ide_line.split(",")]
+                if len(tokens) >= 2:
+                    m = tokens[1].lower()
+                    if m in MODEL_TO_ID and m not in seen_models:
+                        seen_models.add(m)
+                        v_info = VANILLA_VEHICLES[MODEL_TO_ID[m]]
+                        target_vehicles.append({
+                            "model": m,
+                            "id": MODEL_TO_ID[m],
+                            "name": v_info["name"],
+                            "is_addon": False
+                        })
+
+            for m, ide_line in ide_by_raw_model.items():
+                if m in seen_models or m in MODEL_TO_ID:
+                    continue
+                toks = [t.strip() for t in ide_line.split(",")]
+                try:
+                    nid = int(toks[0]) if toks[0] else None
+                except (ValueError, TypeError):
+                    nid = None
+                seen_models.add(m)
+                target_vehicles.append({
+                    "model": m,
+                    "id": nid,
                     "name": m.upper(),
                     "is_addon": True
                 })
@@ -642,9 +681,12 @@ class ModInstaller:
         orig_clean = original_name.lower().replace("_", " ").replace("-", " ")
         def v_prio(v):
             m = v["model"]
-            if m in orig_clean or v["name"].lower() in orig_clean:
+            is_dam = "shit" in m or "dam" in m
+            wants_dam = any(kw in orig_clean for kw in ("beater", "damaged", "wreck", "rust", "junk"))
+            name_clean = v.get("name", "").lower()
+            if m in orig_clean or name_clean in orig_clean or (wants_dam and is_dam):
                 return (0, m)
-            if "shit" in m or "dam" in m:
+            if is_dam:
                 return (2, m)
             return (1, m)
 
@@ -786,9 +828,14 @@ class ModInstaller:
             # Config flags (handling falls back to the shared physics ID from
             # vehicles.ide, e.g. zr250/zr250b both ride on ZR250)
             v["has_handling"] = (m in _handling_ids) or (_ide_handling.get(m, "") in _handling_ids)
-            v["has_carcols"] = m in _carcols_models
+            v["has_carcols"] = (m in _carcols_models) or (len(target_vehicles) == 1 and bool(_carcols_models))
             v["has_carmods"] = m in _carmods_models
             v["carmods_parts"] = list(_carmods_parts_by_model.get(m, []))
+
+        if primary_dffs:
+            real_vehicles = [v for v in target_vehicles if v.get("dff_files")]
+            if real_vehicles:
+                target_vehicles = real_vehicles
 
         # Detect mutually exclusive install modes: many packs ship the same car
         # as an Added (new model) and a Replace (vanilla model) version with

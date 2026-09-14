@@ -4608,6 +4608,57 @@ class TestCustomEngineTypeHandling(unittest.TestCase):
         self.assertNotIn("INGRIP     1400.0", "\n".join(parsed["unrecognized"]))
 
 
+class TestGhostVehicleExclusion(Fixture):
+    def setUp(self):
+        super().setUp()
+        self.installer = ModInstaller(str(self.game), "Modded Cars", backup_manager=self.backup_manager)
+
+    def test_ghost_vehicle_not_created_when_handling_or_carcols_references_different_vanilla_car(self):
+        src = Path(self.temp.name) / "1971 Vapid Sadler Beater"
+        src.mkdir()
+        (src / "sadlshit.dff").write_bytes(b"beater dff data")
+        (src / "sadlshit.txd").write_bytes(b"beater txd data")
+        (src / "sadlshit_dat.txt").write_text(
+            "vehicles.ide\n"
+            "605, sadlshit, sadlshit, car, SADLER, SADLSHI, null, normal, 10, 0, 0, -1, 0.81, 0.81, -1\n\n"
+            "handling.cfg\n"
+            "SADLER 1700.0 4500.0 2.2 0.0 0.1 -0.15 70 0.65 0.75 0.52 5 150.0 16.0 10.0 R P 8.0 0.55 0 35.0 1.2 0.12 0.0 0.35 -0.15 0.5 0.0 0.26 0.50 35000 00222004 0 1 0\n\n"
+            "carcols.dat\n"
+            "sadler, 38,1, 1,27, 26,1, 39,27\n\n"
+            "carmods.dat\n"
+            "sadlshit, nto_b_l, nto_b_s, nto_b_tw\n",
+            encoding="utf-8"
+        )
+        res = self.installer.inspect_source(str(src))
+        self.assertTrue(res["success"], res)
+        self.assertEqual(res["target_model"], "sadlshit")
+        self.assertEqual(res["target_id"], 605)
+        self.assertEqual(res["target_models"], ["sadlshit"])
+        self.assertNotIn("sadler", res["target_models"])
+        self.assertEqual(res["friendly_vanilla_name"], "Sadler (Damaged)")
+
+        tv = res["target_vehicles"][0]
+        self.assertEqual(tv["model"], "sadlshit")
+        self.assertEqual(tv["dff_files"], ["sadlshit.dff"])
+        self.assertEqual(tv["txd_files"], ["sadlshit.txd"])
+        self.assertTrue(tv["has_handling"])
+        self.assertTrue(tv["has_carcols"])
+        self.assertTrue(tv["has_carmods"])
+
+    def test_pure_handling_mod_without_dff_still_detects_target_vehicle(self):
+        src = Path(self.temp.name) / "handling_only"
+        src.mkdir()
+        (src / "readme.txt").write_text(
+            "INFERNUS 1500.0 3000.0 2.2 0.0 0.1 -0.15 70 0.85 0.8 0.5 5 240.0 30.0 10.0 R P 11.0 0.45 0 35.0 1.4 0.15 0.0 0.28 -0.15 0.5 0.3 0.36 0.60 35000 40002004 1 0 0 1\n",
+            encoding="utf-8"
+        )
+        res = self.installer.inspect_source(str(src))
+        self.assertTrue(res["success"], res)
+        self.assertEqual(res["target_model"], "infernus")
+        self.assertEqual(res["target_id"], 411)
+        self.assertIn("infernus", res["target_models"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
