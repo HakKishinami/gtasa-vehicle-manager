@@ -1610,6 +1610,9 @@ function setupParamGuideInteractive() {
       for (let i = 10; i < Math.min(25, tokens.length - 1); i++) {
         if (/^[FR4]$/i.test(tokens[i][0]) && /^[PDE]$/i.test(tokens[i + 1][0])) return i;
       }
+      for (let i = 10; i < Math.min(25, tokens.length - 1); i++) {
+        if (/^[FR4]$/i.test(tokens[i][0]) && /^[A-Z]$/i.test(tokens[i + 1][0])) return i;
+      }
       return -1;
     };
 
@@ -2020,6 +2023,16 @@ function parseHandlingLine(rawLine) {
     if (['F', 'R', '4'].includes(p1) && ['P', 'D', 'E'].includes(p2)) {
       driveIdx = i;
       break;
+    }
+  }
+  if (driveIdx === -1) {
+    for (let i = 10; i < Math.min(25, parts.length - 1); i++) {
+      const p1 = parts[i].toUpperCase();
+      const p2 = parts[i + 1].toUpperCase();
+      if (['F', 'R', '4'].includes(p1) && /^[A-Z]$/.test(p2)) {
+        driveIdx = i;
+        break;
+      }
     }
   }
   if (driveIdx === -1) return null;

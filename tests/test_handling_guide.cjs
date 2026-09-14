@@ -238,3 +238,22 @@ test('a line without a Drive/Engine pair highlights nothing and jumps nowhere', 
   assert.equal(e.input.selectionStart, 0, 'an unusable line is left alone');
   assert.equal(e.activeChip(), null);
 });
+
+test('a line with a custom engine type like 4 R highlights drive and engine chips', async () => {
+  const e = setup();
+  const customTokens = TOKENS.map((token, index) => {
+    if (index === 15) return '4';
+    if (index === 16) return 'R';
+    return token;
+  });
+  e.input.value = customTokens.join(' ');
+  // Position caret inside token 16 ('R', engine type)
+  const engineTokenOffset = customTokens.slice(0, 16).join(' ').length + 1;
+  e.input.selectionStart = engineTokenOffset;
+  e.input.fire('keyup');
+  const active = e.activeChip();
+  assert.ok(active, 'chip must be lit when caret is inside custom engine type');
+  assert.equal(active.textContent, '12.Engine[PDE]');
+});
+
+

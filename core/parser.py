@@ -481,12 +481,18 @@ class DualTrackParser:
         if not re.match(r'^[A-Za-z0-9_]{2,20}$', ident):
             return False
 
-        # Find drive type [FR4] and engine type [PDE] (case-insensitive)
+        # Find drive type [FR4] and engine type (priority to standard [PDE], then fallback to single letter)
         drive_idx = -1
         for i in range(10, min(25, len(parts) - 1)):
             if parts[i].upper() in ("F", "R", "4") and parts[i + 1].upper() in ("P", "D", "E"):
                 drive_idx = i
                 break
+
+        if drive_idx == -1:
+            for i in range(10, min(25, len(parts) - 1)):
+                if parts[i].upper() in ("F", "R", "4") and len(parts[i + 1]) == 1 and parts[i + 1].isalpha():
+                    drive_idx = i
+                    break
 
         if drive_idx == -1:
             return False
@@ -907,12 +913,18 @@ class DualTrackParser:
             drive_type_map = {"F": "FWD", "R": "RWD", "4": "AWD"}
             engine_type_map = {"P": "Petrol", "D": "Diesel", "E": "Electric"}
 
-            # Find drive and engine type index
+            # Find drive and engine type index (priority to standard [PDE], then fallback to single letter)
             drive_idx = -1
             for i in range(10, min(25, len(parts) - 1)):
                 if parts[i].upper() in ("F", "R", "4") and parts[i + 1].upper() in ("P", "D", "E"):
                     drive_idx = i
                     break
+
+            if drive_idx == -1:
+                for i in range(10, min(25, len(parts) - 1)):
+                    if parts[i].upper() in ("F", "R", "4") and len(parts[i + 1]) == 1 and parts[i + 1].isalpha():
+                        drive_idx = i
+                        break
 
             if drive_idx == -1:
                 return {"raw": raw_line, "valid": False}

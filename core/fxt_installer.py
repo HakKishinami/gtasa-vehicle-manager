@@ -231,6 +231,13 @@ def deploy_fxt(source_files, vehicles, destinations, source_keys, backup_manager
         key = next(iter(source_rows))
         aliases[key] = [0]
 
+    all_package_models = {
+        v.get('source_model', '').lower() for v in vehicles if v.get('source_model')
+    } | {
+        v.get('target_model', '').lower() for v in vehicles if v.get('target_model')
+    }
+    all_package_models.discard('')
+
     desired, final_keys = {}, {}
     for index, vehicle in enumerate(vehicles):
         directory = destinations[index]
@@ -257,8 +264,33 @@ def deploy_fxt(source_files, vehicles, destinations, source_keys, backup_manager
         managed.add(key)
         if key in desired and desired[key][0] != name:
             raise ValueError(f'Multiple vehicles share FXT key {key} with different names; please assign distinct keys')
+
+        author_file = os.path.basename(author[1]) if author else None
+        fxt_filename = target + '.fxt'
+        is_addon = (
+            vehicle.get('category') == 'Addon Cars'
+            or vehicle.get('addon_id') is not None
+            or bool(vehicle.get('is_addon'))
+        )
+        if author_file:
+            author_stem = os.path.splitext(author_file)[0].lower()
+            other_models = {
+                v.get('source_model', '').lower()
+                for j, v in enumerate(vehicles)
+                if j != index and v.get('source_model')
+            } | {
+                v.get('target_model', '').lower()
+                for j, v in enumerate(vehicles)
+                if j != index and v.get('target_model')
+            }
+            other_models.discard('')
+            belongs_to_other = author_stem in other_models and author_stem not in (target, model)
+            addon_mismatch = is_addon and author_stem not in (target, model)
+            if not (belongs_to_other or addon_mismatch):
+                fxt_filename = author_file
+
         # A shared key with the same name needs one global definition only.
-        desired.setdefault(key, (name, directory, os.path.basename(author[1]) if author else target + '.fxt'))
+        desired.setdefault(key, (name, directory, fxt_filename, author_file, is_addon))
         final_keys[target] = key
 
     existing, locations, styles = {}, {}, {}
@@ -320,12 +352,17 @@ def deploy_fxt(source_files, vehicles, destinations, source_keys, backup_manager
             if not any(entry(row) and entry(row)[0] == key for row in output.get(dest, [])):
                 output.setdefault(dest, list(comments[filename])).append(f'{key} {name}')
 
-    for key, (name, directory, filename) in desired.items():
+    for key, (name, directory, filename, author_file, is_addon) in desired.items():
         # Prefer the author's destination file when it already exists; otherwise
         # reuse an existing mapping instead of generating a second file.
         author_dest = destination_path(directory, filename)
-        dest = author_dest if author_dest in existing else locations.get((directory, key), author_dest)
-        output.setdefault(dest, list(comments.get(filename, []))).append(f'{key} {name}')
+        existing_loc = locations.get((directory, key))
+        if existing_loc and os.path.basename(existing_loc).lower() != filename.lower():
+            existing_stem = os.path.splitext(os.path.basename(existing_loc))[0].lower()
+            if existing_stem in all_package_models or is_addon:
+                existing_loc = None
+        dest = author_dest if author_dest in existing else (existing_loc or author_dest)
+        output.setdefault(dest, list(comments.get(filename, comments.get(author_file, [])))).append(f'{key} {name}')
 
     changed = []
     with backup_manager.snapshot('install_fxt', 'Assign and update FXT names per vehicle'):

@@ -174,6 +174,32 @@ class FxtRoutingRegression(unittest.TestCase):
                 self.deploy([])
         self.assertEqual(path.read_text(), 'CHEET86 Existing\n')
 
+    def test_shared_author_file_named_after_one_vehicle_gives_other_vehicle_its_own_fxt_file(self):
+        source = self.author('phoenix.fxt', 'PHOENIX Phoenix\nPHXSHIT Phoenix (Beater)\n')
+        vehicles = [
+            dict(source_model='phoenix', target_model='phoenix', fxt_key='PHOENIX', fxt_name='Phoenix', category='Modded Cars', generate_fxt=True),
+            dict(source_model='phxshit', target_model='phxshit', fxt_key='PHXSHIT', fxt_name='Phoenix (Beater)', category='Addon Cars', addon_id=13000, generate_fxt=True)
+        ]
+        deploy_fxt([source], vehicles, [str(self.dest[0]), str(self.dest[1])], {}, self.backup)
+        self.assertTrue((self.dest[0] / 'phoenix.fxt').exists())
+        self.assertEqual((self.dest[0] / 'phoenix.fxt').read_text(encoding='utf-8').strip(), 'PHOENIX Phoenix')
+        self.assertTrue((self.dest[1] / 'phxshit.fxt').exists())
+        self.assertEqual((self.dest[1] / 'phxshit.fxt').read_text(encoding='utf-8').strip(), 'PHXSHIT Phoenix (Beater)')
+        self.assertFalse((self.dest[1] / 'phoenix.fxt').exists())
+
+    def test_reinstall_cleans_up_obsolete_author_named_fxt_in_addon_dir(self):
+        (self.dest[0] / 'phoenix.fxt').write_text('PHOENIX Phoenix\n', encoding='utf-8')
+        (self.dest[1] / 'phoenix.fxt').write_text('PHXSHIT Old (Beater)\n', encoding='utf-8')
+        source = self.author('phoenix.fxt', 'PHOENIX Phoenix\nPHXSHIT Phoenix (Beater)\n')
+        vehicles = [
+            dict(source_model='phoenix', target_model='phoenix', fxt_key='PHOENIX', fxt_name='Phoenix', category='Modded Cars', generate_fxt=True),
+            dict(source_model='phxshit', target_model='phxshit', fxt_key='PHXSHIT', fxt_name='Phoenix (Beater)', category='Addon Cars', addon_id=13000, generate_fxt=True)
+        ]
+        deploy_fxt([source], vehicles, [str(self.dest[0]), str(self.dest[1])], {}, self.backup)
+        self.assertFalse((self.dest[1] / 'phoenix.fxt').exists())
+        self.assertTrue((self.dest[1] / 'phxshit.fxt').exists())
+        self.assertEqual((self.dest[1] / 'phxshit.fxt').read_text(encoding='utf-8').strip(), 'PHXSHIT Phoenix (Beater)')
+
 
 class FxtInstallIntegration(unittest.TestCase):
     def setUp(self):
@@ -212,6 +238,30 @@ class FxtInstallIntegration(unittest.TestCase):
         self.assertIn('CHEETAH, MYGT,', shadow)
         self.assertIn('CHEET86, MY86,', shadow)
         self.assertIn('CHEETAH, CHEETAH,', (self.game / 'data' / 'vehicles.ide').read_text())
+
+    def test_install_pack_with_replacement_and_addon_routes_fxt_without_filename_collision(self):
+        (self.source / 'phoenix.dff').write_bytes(b'dff')
+        (self.source / 'phxshit.dff').write_bytes(b'dff')
+        (self.source / 'phoenix.fxt').write_text('PHOENIX Phoenix\nPHXSHIT Phoenix (Beater)\n')
+        ide = '13500, phxshit, phxshit, car, PHXSHIT, PHXSHIT, null, normal, 10, 0, 0, -1, 0.7, 0.7, -1'
+        (self.source / 'readme.txt').write_text('vehicles.ide\n' + ide)
+        vehicles = [
+            dict(source_model='phoenix', target_model='phoenix', category='Modded Cars',
+                 folder_name='imponte-phoenix', fxt_key='PHOENIX', fxt_name='Phoenix',
+                 merge_fla=False),
+            dict(source_model='phxshit', target_model='phxshit', category='Addon Cars',
+                 folder_name='phoenix beater', fxt_key='PHXSHIT', fxt_name='Phoenix (Beater)',
+                 addon_id=13500, merge_fla=False)
+        ]
+        result = self.installer.execute_install(dict(inspect_dir=str(self.source), folder_name='Pack', vehicles=vehicles))
+        self.assertTrue(result['success'], result)
+        rep_dest = self.game / 'modloader' / 'Modded Cars' / 'imponte-phoenix'
+        addon_dest = self.game / 'modloader' / 'Addon Cars' / 'phoenix beater'
+        self.assertTrue((rep_dest / 'phoenix.fxt').exists())
+        self.assertIn('PHOENIX Phoenix', (rep_dest / 'phoenix.fxt').read_text())
+        self.assertTrue((addon_dest / 'phxshit.fxt').exists())
+        self.assertIn('PHXSHIT Phoenix (Beater)', (addon_dest / 'phxshit.fxt').read_text())
+        self.assertFalse((addon_dest / 'phoenix.fxt').exists())
 
     def test_excluded_author_file_is_not_copied_when_generation_disabled(self):
         (self.source / 'cheetah.dff').write_bytes(b'dff')

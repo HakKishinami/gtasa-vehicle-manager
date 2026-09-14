@@ -4560,6 +4560,54 @@ class Car4SectionRegression(unittest.TestCase):
         self.assertEqual(cfg["source"], "shadow")
 
 
+
+class TestCustomEngineTypeHandling(unittest.TestCase):
+    def setUp(self):
+        self.parser = DualTrackParser()
+
+    def test_is_handling_line_recognizes_custom_engine_types(self):
+        # GT Racer NSX with '4 R'
+        ingrip_line = "INGRIP     1400.0    1500.3   1.5    0.0 0.0 -0.25 70  0.70 0.8  0.50 \t5 250.0 30.0 10.0 4 R \t11.0  0.51 0 30.0  \t1.2  0.19  0.0   0.25 -0.10 0.5  0.4\t\t0.37 0.72 95000 \t40002004\tC04000\t\t1  1\t1"
+        self.assertTrue(self.parser._is_handling_line(ingrip_line))
+
+        # Rotary RX-7 mod with 'R R'
+        rotary_line = "RX7        1250.0    2800.0   2.0    0.0 0.0 -0.15 70  0.75 0.85 0.50 \t5 230.0 28.0 10.0 R R \t10.0  0.50 0 32.0  \t1.1  0.15  0.0   0.28 -0.12 0.5  0.3\t\t0.30 0.60 45000 \t40002004\t1004000\t\t1  1\t1"
+        self.assertTrue(self.parser._is_handling_line(rotary_line))
+
+        # Gasoline mod with '4 G'
+        gas_line = "CUSTOMCAR  1600.0    3200.0   2.2    0.0 0.0 -0.10 75  0.70 0.80 0.50 \t5 210.0 25.0 12.0 4 G \t9.0   0.50 0 30.0  \t1.0  0.14  0.0   0.30 -0.15 0.5  0.3\t\t0.25 0.55 30000 \t40000000\t0\t\t0  1\t0"
+        self.assertTrue(self.parser._is_handling_line(gas_line))
+
+    def test_decompose_handling_with_custom_engine_type(self):
+        ingrip_line = "INGRIP     1400.0    1500.3   1.5    0.0 0.0 -0.25 70  0.70 0.8  0.50 \t5 250.0 30.0 10.0 4 R \t11.0  0.51 0 30.0  \t1.2  0.19  0.0   0.25 -0.10 0.5  0.4\t\t0.37 0.72 95000 \t40002004\tC04000\t\t1  1\t1"
+        decomp = self.parser.decompose_handling(ingrip_line)
+        self.assertIsNotNone(decomp)
+        self.assertTrue(decomp.get("valid"))
+        self.assertEqual(decomp.get("identifier"), "INGRIP")
+        self.assertEqual(decomp.get("drive_type"), "4")
+        self.assertEqual(decomp.get("engine_type"), "R")
+        self.assertEqual(decomp.get("max_speed_kmh"), 250.0)
+        self.assertEqual(decomp.get("acceleration"), 30.0)
+
+    def test_parse_text_content_includes_custom_engine_type_in_handling_cfg(self):
+        readme_text = (
+            "Dinka Infernus GT Racer 1991\n"
+            "Data Lines:\n\n"
+            "vehicles.ide\n"
+            "####, \tingrip, \tingrip, \tcar, \t\tINGRIP, \tINGRIP, \tnull,\texecutive, \t5, \t0,\t0,\t\t-1, 0.7, 0.7,\t\t0\n\n"
+            "handling.cfg\n"
+            "INGRIP     1400.0    1500.3   1.5    0.0 0.0 -0.25 70  0.70 0.8  0.50 \t5 250.0 30.0 10.0 4 R \t11.0  0.51 0 30.0  \t1.2  0.19  0.0   0.25 -0.10 0.5  0.4\t\t0.37 0.72 95000 \t40002004\tC04000\t\t1  1\t1\n\n"
+            "carcols.dat\n"
+            "ingrip, 10,0, 3,0, 6,0\n"
+        )
+        parsed = self.parser.parse_text_content(readme_text)
+        self.assertEqual(len(parsed["handling_cfg"]), 1)
+        self.assertIn("INGRIP", parsed["handling_cfg"][0])
+        self.assertEqual(len(parsed["vehicles_ide"]), 1)
+        self.assertEqual(len(parsed["carcols_dat"]), 1)
+        self.assertNotIn("INGRIP     1400.0", "\n".join(parsed["unrecognized"]))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
