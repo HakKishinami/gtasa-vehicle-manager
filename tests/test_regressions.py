@@ -4476,6 +4476,90 @@ class VanillaGxtReuseRegression(unittest.TestCase):
         self.assertIn("MYCUST Buffalo SUX", Path(written[0]).read_text(encoding="utf-8-sig"))
 
 
+class Car4SectionRegression(unittest.TestCase):
+    """carcols.dat keeps its 4-color vehicles in a "car4" section that follows
+    the "car" section. The reader used to stop at the first "end", so every
+    car4 vehicle looked like it had no colors (or fell back to the stale
+    vanilla line) in the inspector and the card editors."""
+
+    VANILLA = (
+        "col\n0,0,0\nend\n"
+        "car\nadmiral, 34,34, 35,35, 37,37, 39,39, 41,41, 43,43, 45,45, 47,47\nend\n"
+        "car4\ncamper, 1,31,1,0, 1,31,1,0, 1,20,3,0, 1,5,0,0, 0,6,3,0, 3,6,3,0, 16,0,8,0, 17,0,120,0\nend\n"
+    )
+    SHADOW = (
+        "col\n0,0,0\nend\n"
+        "car\nend\n"
+        "car4\n"
+        "admiral, 96,20,0,0, 114,102,0,0, 68,102,0,0, 123,102,0,0, 0,102,0,0, 1,65,0,0, 53,20,0,0, 99,24,0,0\n"
+        "admrl28, 123,102,0,0, 3,102,0,0, 46,102,0,0, 7,20,0,0, 83,65,0,0, 1,20,0,0, 37,107,0,0, 6,102,0,0\n"
+        "end\n"
+    )
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="car4_")
+        self.addCleanup(self.temp.cleanup)
+        self.game = Path(self.temp.name) / "game"
+        (self.game / "data").mkdir(parents=True)
+        (self.game / "gta_sa.exe").write_bytes(b"x")
+        (self.game / "data" / "carcols.dat").write_text(self.VANILLA, encoding="utf-8")
+        self.shadow = self.game / "modloader" / "Modded Cars"
+        self.shadow.mkdir(parents=True)
+        (self.shadow / "carcols.dat").write_text(self.SHADOW, encoding="utf-8")
+        self.merger = ConfigMerger(str(self.shadow), str(self.game))
+
+    def section_of(self, model):
+        section = None
+        for line in (self.shadow / "carcols.dat").read_text(encoding="utf-8-sig").splitlines():
+            s = line.strip()
+            if s.lower() in ("car", "car4"):
+                section = s.lower()
+            elif s.lower() == "end":
+                section = None
+            elif s and not s.startswith("#") and s.split(",")[0].strip().lower() == model:
+                return section
+        return None
+
+    def test_reader_returns_a_car4_only_model_with_the_marker(self):
+        cfg = self.merger.get_vehicle_active_configs("admrl28")["carcols"]
+        self.assertIsNotNone(cfg["raw"], "car4-only model was not found")
+        self.assertTrue(cfg["raw"].lower().startswith("car4 "))
+        self.assertEqual(cfg["source"], "shadow")
+        self.assertTrue(cfg["decomposed"]["is_car4"])
+        self.assertEqual(cfg["decomposed"]["count"], 8)
+
+    def test_shadow_car4_line_wins_over_the_vanilla_car_line(self):
+        cfg = self.merger.get_vehicle_active_configs("admiral")["carcols"]
+        self.assertEqual(cfg["source"], "shadow")
+        self.assertTrue(cfg["raw"].lower().startswith("car4 "))
+        self.assertIn("96", cfg["raw"])
+
+    def test_vanilla_car4_entries_are_readable_too(self):
+        cfg = self.merger.get_vehicle_active_configs("camper")["carcols"]
+        self.assertEqual(cfg["source"], "vanilla")
+        self.assertTrue(cfg["raw"].lower().startswith("car4 "))
+        self.assertTrue(cfg["decomposed"]["is_car4"])
+
+    def test_saving_a_car4_line_keeps_it_in_the_car4_section(self):
+        res = self.merger.save_vehicle_config(
+            "euros", "carcols",
+            "car4 euros, 1,2,3,4, 5,6,7,8, 9,10,11,12")
+        self.assertTrue(res["success"], res)
+        self.assertEqual(self.section_of("euros"), "car4")
+
+    def test_ide_lookup_scans_every_cars_block(self):
+        (self.game / "data" / "vehicles.ide").write_text(
+            "cars\n402, buffalo, buffalo, car, BUFFALO, BUFFALO, null, richfamily, 5, 0, 0, -1, 0.74, 0.74, 0\nend\n",
+            encoding="utf-8")
+        (self.shadow / "vehicles.ide").write_text(
+            "cars\n402, buffalo, buffalo, car, BUFFALO, BUFFALO, null, richfamily, 5, 0, 0, -1, 0.74, 0.74, 0\nend\n"
+            "\ncars\n12000, admrl28, admrl28, car, ADMRL28, ADMRL28, null, richfamily, 7, 0, 0, -1, 0.71, 0.71, 0\nend\n",
+            encoding="utf-8")
+        cfg = self.merger.get_vehicle_active_configs("admrl28")["vehicles_ide"]
+        self.assertIsNotNone(cfg["raw"], "model in a second cars block was not found")
+        self.assertEqual(cfg["source"], "shadow")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

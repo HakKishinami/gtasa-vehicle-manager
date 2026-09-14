@@ -1929,7 +1929,9 @@ function renderLiveCarcolsSwatches(rawText) {
   }
 
   let line = rawText.trim();
-  if (line.toLowerCase().startsWith("car4")) {
+  const isCar4 = /^car4\b/i.test(line);
+  const stride = isCar4 ? 4 : 2;
+  if (isCar4) {
     line = line.substring(4).trim();
   }
 
@@ -1947,19 +1949,39 @@ function renderLiveCarcolsSwatches(rawText) {
     }
   }
 
-  if (colorIds.length < 2) {
+  if (colorIds.length < stride) {
     container.innerHTML = "";
     return;
   }
 
   let html = '<div class="swatch-grid" style="margin-top:4px;">';
   let pairCount = 0;
-  for (let i = 0; i < colorIds.length - 1; i += 2) {
+  for (let i = 0; i + stride <= colorIds.length; i += stride) {
     const c1 = colorIds[i];
     const c2 = colorIds[i + 1];
     pairCount++;
     const hex1 = (carcolsPaletteCache && carcolsPaletteCache[c1]) || "#888888";
     const hex2 = (carcolsPaletteCache && carcolsPaletteCache[c2]) || "#888888";
+    if (isCar4) {
+      const c3 = colorIds[i + 2];
+      const c4 = colorIds[i + 3];
+      const hex3 = (carcolsPaletteCache && carcolsPaletteCache[c3]) || "#888888";
+      const hex4 = (carcolsPaletteCache && carcolsPaletteCache[c4]) || "#888888";
+      const tooltip = window.t("inspect.colorQuadTooltip", "4-Color Scheme #{0}: Colors {1}, {2}, {3}, {4}")
+        .replace("{0}", pairCount).replace("{1}", c1).replace("{2}", c2).replace("{3}", c3).replace("{4}", c4);
+      html += `
+        <div class="color-pair-badge" title="${tooltip}">
+          <div class="swatch-split swatch-quad">
+            <div class="quad" style="background-color: ${hex1}"></div>
+            <div class="quad" style="background-color: ${hex2}"></div>
+            <div class="quad" style="background-color: ${hex3}"></div>
+            <div class="quad" style="background-color: ${hex4}"></div>
+          </div>
+          <span class="swatch-ids">${c1}, ${c2}, ${c3}, ${c4}</span>
+        </div>
+      `;
+      continue;
+    }
     const tooltip = window.t("inspect.colorPairTooltip", "Scheme #{0}: Colors {1}, {2}")
       .replace("{0}", pairCount).replace("{1}", c1).replace("{2}", c2);
 

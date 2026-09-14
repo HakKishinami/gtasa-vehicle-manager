@@ -1113,6 +1113,21 @@ class ConfigMerger:
             elif a.get("model"):
                 action_map[a["model"].lower()] = clean_l + "\n"
 
+        # A model in a later cars block is an update, not a new entry to
+        # insert at the first end. Locate existing models across all blocks.
+        existing_models = set()
+        in_cars = False
+        for line in lines:
+            stripped = normalize_ide_line(line.strip())
+            if stripped.lower() == "cars":
+                in_cars = True
+            elif stripped.lower() == "end":
+                in_cars = False
+            elif in_cars and stripped and not stripped.startswith("#"):
+                parts = [p.strip() for p in stripped.split(",") if p.strip()]
+                if len(parts) >= 2:
+                    existing_models.add(parts[1].lower())
+
         handled_models = set()
         new_lines = []
         in_cars = False
@@ -1125,7 +1140,7 @@ class ConfigMerger:
                 continue
             if in_cars and stripped.lower() == "end":
                 for m, line_to_write in action_map.items():
-                    if m not in handled_models:
+                    if m not in existing_models and m not in handled_models:
                         new_lines.append(line_to_write)
                         handled_models.add(m)
                 in_cars = False
@@ -1136,8 +1151,11 @@ class ConfigMerger:
                 parts = [p.strip() for p in normalize_ide_line(stripped).split(",") if p.strip()]
                 if len(parts) >= 2 and parts[1].lower() in action_map:
                     m = parts[1].lower()
-                    new_lines.append(action_map[m])
-                    handled_models.add(m)
+                    # Keep the first occurrence and remove duplicates only
+                    # for models explicitly updated by this operation.
+                    if m not in handled_models:
+                        new_lines.append(action_map[m])
+                        handled_models.add(m)
                     continue
 
             new_lines.append(line)
@@ -1164,7 +1182,11 @@ class ConfigMerger:
                                 in_cars = True
                                 continue
                             if in_cars and s.lower() == "end":
-                                break
+                                # A file may hold several cars blocks (the merge
+                                # appends one when a model cannot be placed), so
+                                # keep scanning instead of stopping here.
+                                in_cars = False
+                                continue
                             if in_cars and s and not s.startswith("#"):
                                 parts = [p.strip() for p in s.split(",") if p.strip()]
                                 if len(parts) >= 2 and parts[1].lower() == model:
@@ -1194,21 +1216,33 @@ class ConfigMerger:
         return None, None
 
     def _find_model_line_in_carcols(self, shadow_path: str, vanilla_path: str, model: str):
+        """Find a vehicle's carcols line, keeping the section it lives in.
+
+        carcols.dat is laid out as "car ... end" followed by "car4 ... end", so
+        the scan has to continue past the first section end: stopping there hid
+        every 4-color vehicle from the inspector and the card editors. Lines
+        from the car4 section are returned with the "car4 " marker the parser
+        expects, so they keep being read as 4-color sets downstream.
+        """
         for fpath, src in [(shadow_path, "shadow"), (vanilla_path, "vanilla")]:
             if fpath and os.path.exists(fpath):
                 try:
-                    in_car = False
+                    section = None
                     with open(fpath, "r", encoding="utf-8-sig", errors="ignore") as f:
                         for line in f:
                             s = line.strip()
-                            if s.lower() == "car" or s.lower() == "car4":
-                                in_car = True
+                            low = s.lower()
+                            if low in ("car", "car4"):
+                                section = low
                                 continue
-                            if in_car and s.lower() == "end":
-                                break
-                            if in_car and s and not s.startswith("#"):
+                            if low == "end":
+                                section = None
+                                continue
+                            if section and s and not s.startswith("#"):
                                 parts = [p.strip() for p in s.split(",") if p.strip()]
                                 if parts and parts[0].lower() == model:
+                                    if section == "car4" and not low.startswith("car4"):
+                                        return f"car4 {s}", src
                                     return s, src
                 except Exception:
                     pass
@@ -1470,7 +1504,13 @@ class ConfigMerger:
             decomposed = self.parser.decompose_carcols(raw_clean)
             if not decomposed:
                 return {"success": False, "error": "Invalid carcols format; expected: model, color1, color2, ..."}
-            res = self._merge_carcols([{"model": model_clean, "line": raw_clean}])
+            # Keep a 4-color entry in the car4 section instead of downgrading it
+            # to a 2-color "car" line.
+            res = self._merge_carcols([{
+                "model": model_clean,
+                "line": raw_clean,
+                "is_car4": bool(decomposed.get("is_car4")),
+            }])
             if not res.get("success"):
                 return res
             return {
