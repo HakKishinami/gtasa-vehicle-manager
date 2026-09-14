@@ -199,17 +199,25 @@ class DualTrackParser:
 
         lines = text.splitlines()
         current_section = None
-        carcols_submode = "car"
+        carcols_submode = None
 
         for raw_line in lines:
             line = raw_line.strip().lstrip('\ufeff')
             if not line:
                 continue
 
+            # Aggregated documents must not inherit an unterminated color
+            # section from the previous author's file.
+            if re.match(r'^---\s*(?:FILE|Readme):', line, re.IGNORECASE):
+                current_section = None
+                carcols_submode = None
+                continue
+
             # Check for descriptive shopping instruction (e.g. 'add this to shopping.dat "section CarMods"...')
             shop_instr = RE_SHOPPING_INSTRUCTION.search(line)
             if shop_instr and not self._is_shopping_carmods_line(line) and not self._is_shopping_item_line(line):
                 current_section = "shopping_dat"
+                carcols_submode = None
                 result["shopping_dat"].append(f"section {shop_instr.group(1)}")
                 continue
 
@@ -217,6 +225,7 @@ class DualTrackParser:
             header_match = RE_SECTION_HEADER.match(line)
             if header_match:
                 tag = header_match.group(1).lower()
+                carcols_submode = None
                 if "veh_mods" in tag or tag in ("obj", "objs"):
                     current_section = "veh_mods_ide"
                 elif "ide" in tag:
@@ -225,7 +234,6 @@ class DualTrackParser:
                     current_section = "handling_cfg"
                 elif "carcols" in tag:
                     current_section = "carcols_dat"
-                    carcols_submode = "car"
                 elif "shopping" in tag:
                     current_section = "shopping_dat"
                 elif "section" in tag and "carmod" in tag:
@@ -248,6 +256,7 @@ class DualTrackParser:
                 # Must contain actual alphanumeric characters
                 if re.search(r'[a-zA-Z0-9]', data_candidate):
                     tag = inline_match.group(1).lower()
+                    carcols_submode = None
                     if "veh_mods" in tag or tag in ("obj", "objs"):
                         current_section = "veh_mods_ide"
                     elif "ide" in tag:
@@ -256,7 +265,6 @@ class DualTrackParser:
                         current_section = "handling_cfg"
                     elif "carcols" in tag:
                         current_section = "carcols_dat"
-                        carcols_submode = "car"
                     elif "shopping" in tag:
                         current_section = "shopping_dat"
                     elif "section" in tag and "carmod" in tag:
@@ -273,19 +281,17 @@ class DualTrackParser:
                     
                     line = data_candidate
 
-            # Handle sub-modes inside carcols_dat (e.g. "car4", "car", "end")
-            if current_section == "carcols_dat":
-                low_check = line.strip().lower()
-                if low_check == "car4":
-                    carcols_submode = "car4"
-                    continue
-                elif low_check in ("car", "col"):
-                    carcols_submode = "car"
-                    continue
-                elif low_check == "end":
-                    carcols_submode = "car"
-                    current_section = None
-                    continue
+            # Actual .dat files can start with col/car/car4 directly, without
+            # a filename header. Explicit sections always override inference.
+            low_check = line.split('#')[0].split(';')[0].split('//')[0].strip().lower()
+            if low_check in ("car", "car4", "col"):
+                current_section = "carcols_dat"
+                carcols_submode = low_check
+                continue
+            if current_section == "carcols_dat" and low_check == "end":
+                carcols_submode = None
+                current_section = None
+                continue
 
             # Ignore comment lines and divider bars
             if (line.startswith("#") or line.startswith(";") or line.startswith("//")) and not inline_match:
@@ -328,9 +334,8 @@ class DualTrackParser:
                 result["vehicles_ide"].append(normalize_ide_line(line))
                 categorized = True
             elif self._is_carcols_line(line):
-                c_line = line
-                if carcols_submode == "car4" and not c_line.lower().startswith("car4"):
-                    c_line = f"car4 {c_line}"
+                c_line = self._normalize_source_carcols(
+                    line, carcols_submode if current_section == "carcols_dat" else None)
                 result["carcols_dat"].append(c_line)
                 categorized = True
             elif self._is_carmods_line(line):
@@ -402,9 +407,7 @@ class DualTrackParser:
                         current_section = None
                 elif current_section == "carcols_dat":
                     if self._is_carcols_line(line) or line.strip().lower() in ("car", "car4", "end"):
-                        c_line = line
-                        if carcols_submode == "car4" and not c_line.lower().startswith("car4"):
-                            c_line = f"car4 {c_line}"
+                        c_line = self._normalize_source_carcols(line, carcols_submode)
                         result[current_section].append(c_line)
                         categorized = True
                     else:
@@ -567,6 +570,30 @@ class DualTrackParser:
             return False
 
         return True
+
+    def _normalize_source_carcols(self, line: str, section: Optional[str] = None) -> str:
+        """Preserve an explicit mode or infer car4 from repeated author groups.
+
+        Only source parsing uses this heuristic. Active carcols.dat entries
+        must still be interpreted by their actual car/car4 section.
+        """
+        marker = re.match(r'^(car4|car)(?=\s|,)', line, re.IGNORECASE)
+        if marker:
+            data = line[marker.end():].strip().lstrip(',').strip()
+            return f"car4 {data}" if marker.group(1).lower() == "car4" else data
+        if section is not None:
+            return f"car4 {line}" if section == "car4" else line
+
+        clean = line.split('#')[0].split(';')[0].split('//')[0].strip()
+        if ',' not in clean:
+            return line
+        colors = clean.split(',', 1)[1].strip().rstrip(',').strip()
+        # Comma + whitespace separates schemes; commas inside a scheme do
+        # not contain whitespace. One long row or mixed grouping is ambiguous.
+        groups = re.split(r',[ \t]+', colors)
+        if len(groups) >= 2 and all(re.fullmatch(r'\d+(?:,\d+){3}', group.strip()) for group in groups):
+            return f"car4 {line}"
+        return line
 
     def _is_carcols_line(self, line: str) -> bool:
         """
