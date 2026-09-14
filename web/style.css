@@ -2029,6 +2029,7 @@ pre {
 .install-settings-col, .install-details-col {
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 .install-step2-kicker {
@@ -2392,7 +2393,7 @@ pre {
   gap: 12px;
   justify-content: space-between;
   align-items: center;
-  margin-top: 16px;
+  margin-top: 0;
   position: sticky;
   bottom: 0;
   z-index: 6;
@@ -3171,10 +3172,34 @@ pre {
 }
 
 /* Tuning ID Table in Installer */
+.tuning-table-wrapper {
+  /* Room for eight rows plus the sticky header and scrollbar. Short lists
+     keep their natural height; larger windows can show more rows. */
+  max-height: clamp(400px, calc(100vh - 600px), 600px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.tuning-id-table {
+  min-width: 720px;
+}
+
 .tuning-id-table th,
 .tuning-id-table td {
   padding: 6px 10px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  white-space: nowrap;
+}
+
+.tuning-table-summary {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .tuning-id-table tr:hover td {

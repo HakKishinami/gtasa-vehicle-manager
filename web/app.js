@@ -4622,152 +4622,148 @@ function setupInstaller() {
   const executeBtn = document.getElementById("btnExecuteInstall");
   if (executeBtn) {
     executeBtn.addEventListener("click", async () => {
-      if (!currentInspectData) return;
-
-      const subfolder = document.getElementById("installSubfolderName").value.trim();
-      if (!subfolder) {
-        showToast(loc({ en: "Please enter a mod folder name" }), "warning");
-        return;
-      }
-
-      const targetCategory = document.getElementById("installCategorySelect").value;
-      if (wizardVehicles && wizardVehicles.length > 1) syncCurrentWizardFormToState();
-      if (!validateNewInstallName()) {
-        showToast(window.t("install.newNameInvalidToast", "Fix the new model/texture name first (2-20 lowercase letters, digits or underscores, unique)"), "error");
-        return;
-      }
-      const targetModel = effectiveInstallTarget();
-      const targetTxd = effectiveInstallTxd();
-
-      // Reverse conversion guard: an addon package may only replace a vanilla
-      // vehicle of the same handling class (car vs bike vs ...). The backend
-      // enforces this too; catching it here gives an instant, clear error.
-      refreshInstallReplaceHint();
-      const classMismatch = anyInstallClassMismatch();
-      if (classMismatch) {
-        showToast(window.t(
-          "install.classMismatchError",
-          "⚠️ Class mismatch: this package is a {0}, but {1} is a {2}. Physics and animation schemas differ between classes — pick a vanilla {0} target instead."
-        ).split("{0}").join(classMismatch.srcType)
-         .split("{1}").join(classMismatch.target.name)
-         .split("{2}").join(classMismatch.tgtType), "error");
-        return;
-      }
-
-      const payload = {
-        inspect_dir: currentInspectData.inspect_dir,
-        target_category: targetCategory,
-        author_folder: document.getElementById("installAuthorFolder") ? document.getElementById("installAuthorFolder").value.trim() : "",
-        folder_name: subfolder,
-        target_model: targetModel,
-        source_model: installTargetSourceModel() || targetModel,
-        source_type: installSourceType(),
-        target_txd: targetTxd,
-        target_handling: effectiveInstallHandling(),
-        copy_files: document.getElementById("chkCopyFiles").checked,
-        merge_handling: document.getElementById("chkMergeHandling").checked,
-        merge_carcols: document.getElementById("chkMergeCarcols").checked,
-        merge_carmods: document.getElementById("chkMergeCarmods").checked,
-        generate_shopping: document.getElementById("chkGenShopping").checked,
-        generate_fxt: document.getElementById("chkGenFxt").checked,
-        fxt_key: document.getElementById("installFxtKey").value.trim(),
-        fxt_name: document.getElementById("installFxtName").value.trim(),
-        merge_fla: document.getElementById("chkMergeFla").checked,
-        variant_choices: collectVariantChoices(),
-        excluded_files: Array.from(window.InstallAssets && window.InstallAssets.getExcludedFiles ? window.InstallAssets.getExcludedFiles() : []),
-        excluded_tuning_parts: collectExcludedTuningParts(),
-        tuning_id_assignments: (() => {
-          const assignments = {};
-          document.querySelectorAll("#installTuningTableBody .input-id-edit").forEach(inp => {
-            if (inp.dataset.registered === "true" || inp.disabled) return;
-            const p = inp.dataset.part;
-            const v = parseInt(inp.value, 10);
-            if (p && !isNaN(v) && v >= 1000) {
-              assignments[p] = v;
-            }
-          });
-          return assignments;
-        })(),
-        parsed_config: currentInspectData.parsed_config,
-        is_temp_extracted: currentInspectData.is_temp_extracted
-      };
-
-      if (wizardVehicles && wizardVehicles.length > 1) {
-        syncCurrentWizardFormToState();
-        persistCurrentPhaseDest();
-        const activeVehicles = wizardVehicles.filter(v => !v.skip);
-        if (activeVehicles.length === 0) {
-          showToast(loc({ en: "All vehicles are marked as skipped. Please keep at least one to install!" }), "warning");
-          return;
-        }
-        // Materialize per-vehicle destination: explicit per-car override wins,
-        // otherwise fall back to its PHASE shared destination (replace and
-        // addon phases are configured independently).
-        payload.vehicles = wizardVehicles.map(wv => {
-          const pd = (hasBothPhases() && phaseDest[phaseOfVehicle(wv)]) || {};
-          return Object.assign({}, wv, {
-            folder_name: ((wv.folder_name || "").trim()) || ((pd.subfolder || "").trim()),
-            category: ((wv.category || "").trim()) || ((pd.category || "").trim()),
-            author: ((wv.author || "").trim()) || ((pd.author || "").trim())
-          });
-        });
-        payload.target_model = activeVehicles[0].target_model;
-
-        // Every converted addon vehicle must have a valid, unique model/TXD name.
-        const seenAddonNames = new Set();
-        for (const wv of activeVehicles) {
-          if ((wv.install_mode || "replace") !== "addon") continue;
-          const nm = String(wv.target_model || "").toLowerCase();
-          const wt = String(wv.target_txd || nm).toLowerCase();
-          const wh = String(wv.target_handling || suggestHandlingId(nm)).trim();
-          const wk = String(wv.fxt_key || "").trim().toUpperCase();
-          if (seenAddonNames.has(nm)
-              || validateCustomModelName(nm, collectTakenModelNames(nm))
-              || !/^[a-z0-9_]{2,20}$/.test(wt)
-              || validateCustomHandlingId(wh)
-              || (wk && !/^[A-Z0-9_]{2,7}$/.test(wk))) {
-            showToast(window.t("install.newNameInvalidToast", "Fix the new model/texture name first (2-20 lowercase letters, digits or underscores, unique)"), "error");
-            return;
-          }
-          wv.target_handling = wh;
-          wv.fxt_key = wk;
-          seenAddonNames.add(nm);
-        }
-      }
-
-      // Addon vehicle IDs: user-editable, must be 612-65535 and free (or self)
-      payload.addon_id_assignments = collectAddonIdAssignments();
-      for (const [am, aid] of Object.entries(payload.addon_id_assignments)) {
-        if (!Number.isInteger(aid) || aid < 612 || aid > 65535) {
-          showToast(window.t("install.addonIdInvalid", "⚠️ Enter an ID between 612–65535"), "error");
-          return;
-        }
-      }
-      for (const [am, aid] of Object.entries(payload.addon_id_assignments)) {
-        try {
-          const cr = await fetch(`/api/ids/check?id=${aid}`);
-          const cd = await cr.json();
-          const occ = cd && cd.result;
-          if (cd.success && occ && !occ.is_free && ((occ.name || "").toLowerCase() !== am)) {
-            showToast(window.t("install.addonIdConflict", "Addon vehicle {0}: ID {1} unusable: {2}").replace("{0}", am.toUpperCase()).replace("{1}", aid).replace("{2}", occ.name || ""), "error");
-            return;
-          }
-        } catch (e) {}
-      }
-      // FLA killable ceiling: warn (not block) when exceeding the ini limit
-      const killCap = await ensureKillableLimit();
-      if (killCap != null) {
-        const over = Object.entries(payload.addon_id_assignments).filter(([, aid]) => aid >= killCap);
-        if (over.length > 0) {
-          const msg = window.t("install.addonIdOverKillableConfirm", "These addon vehicle IDs exceed the FLA killable limit {0}; destroyed vehicles may not register kills or crash the game (raise Count of killable model IDs in the ini and retry):\n{1}\nInstall anyway?").replace("{0}", killCap).replace("{1}", over.map(([am, aid]) => `${am.toUpperCase()} → ${aid}`).join(", "));
-          if (!(await showAppConfirm(msg))) return;
-        }
-      }
-
-      executeBtn.disabled = true;
-      executeBtn.textContent = loc({ en: "Checking existing installations..." });
-
+      if (!currentInspectData || tuningInstallBusy) return;
+      tuningInstallBusy = true;
+      updateTuningSelectionSummary();
       try {
+        if (!(await refreshTuningValidation(true))) {
+          showToast(window.t("install.tuningResolve", "Resolve the highlighted tuning IDs, auto-assign, or uncheck those parts to continue."), "error");
+          return;
+        }
+        const tuningGenerationAtSubmit = tuningValidationGeneration;
+
+        const subfolder = document.getElementById("installSubfolderName").value.trim();
+        if (!subfolder) {
+          showToast(loc({ en: "Please enter a mod folder name" }), "warning");
+          return;
+        }
+
+        const targetCategory = document.getElementById("installCategorySelect").value;
+        if (wizardVehicles && wizardVehicles.length > 1) syncCurrentWizardFormToState();
+        if (!validateNewInstallName()) {
+          showToast(window.t("install.newNameInvalidToast", "Fix the new model/texture name first (2-20 lowercase letters, digits or underscores, unique)"), "error");
+          return;
+        }
+        const targetModel = effectiveInstallTarget();
+        const targetTxd = effectiveInstallTxd();
+
+        // Reverse conversion guard: an addon package may only replace a vanilla
+        // vehicle of the same handling class (car vs bike vs ...). The backend
+        // enforces this too; catching it here gives an instant, clear error.
+        refreshInstallReplaceHint();
+        const classMismatch = anyInstallClassMismatch();
+        if (classMismatch) {
+          showToast(window.t(
+            "install.classMismatchError",
+            "⚠️ Class mismatch: this package is a {0}, but {1} is a {2}. Physics and animation schemas differ between classes — pick a vanilla {0} target instead."
+          ).split("{0}").join(classMismatch.srcType)
+           .split("{1}").join(classMismatch.target.name)
+           .split("{2}").join(classMismatch.tgtType), "error");
+          return;
+        }
+
+        const payload = {
+          inspect_dir: currentInspectData.inspect_dir,
+          target_category: targetCategory,
+          author_folder: document.getElementById("installAuthorFolder") ? document.getElementById("installAuthorFolder").value.trim() : "",
+          folder_name: subfolder,
+          target_model: targetModel,
+          source_model: installTargetSourceModel() || targetModel,
+          source_type: installSourceType(),
+          target_txd: targetTxd,
+          target_handling: effectiveInstallHandling(),
+          copy_files: document.getElementById("chkCopyFiles").checked,
+          merge_handling: document.getElementById("chkMergeHandling").checked,
+          merge_carcols: document.getElementById("chkMergeCarcols").checked,
+          merge_carmods: document.getElementById("chkMergeCarmods").checked,
+          generate_shopping: document.getElementById("chkGenShopping").checked,
+          generate_fxt: document.getElementById("chkGenFxt").checked,
+          fxt_key: document.getElementById("installFxtKey").value.trim(),
+          fxt_name: document.getElementById("installFxtName").value.trim(),
+          merge_fla: document.getElementById("chkMergeFla").checked,
+          variant_choices: collectVariantChoices(),
+          excluded_files: Array.from(window.InstallAssets && window.InstallAssets.getExcludedFiles ? window.InstallAssets.getExcludedFiles() : []),
+          excluded_tuning_parts: collectExcludedTuningParts(),
+          tuning_id_assignments: collectTuningIdAssignments(),
+          parsed_config: currentInspectData.parsed_config,
+          is_temp_extracted: currentInspectData.is_temp_extracted
+        };
+
+        if (wizardVehicles && wizardVehicles.length > 1) {
+          syncCurrentWizardFormToState();
+          persistCurrentPhaseDest();
+          const activeVehicles = wizardVehicles.filter(v => !v.skip);
+          if (activeVehicles.length === 0) {
+            showToast(loc({ en: "All vehicles are marked as skipped. Please keep at least one to install!" }), "warning");
+            return;
+          }
+          // Materialize per-vehicle destination: explicit per-car override wins,
+          // otherwise fall back to its PHASE shared destination (replace and
+          // addon phases are configured independently).
+          payload.vehicles = wizardVehicles.map(wv => {
+            const pd = (hasBothPhases() && phaseDest[phaseOfVehicle(wv)]) || {};
+            return Object.assign({}, wv, {
+              folder_name: ((wv.folder_name || "").trim()) || ((pd.subfolder || "").trim()),
+              category: ((wv.category || "").trim()) || ((pd.category || "").trim()),
+              author: ((wv.author || "").trim()) || ((pd.author || "").trim())
+            });
+          });
+          payload.target_model = activeVehicles[0].target_model;
+
+          // Every converted addon vehicle must have a valid, unique model/TXD name.
+          const seenAddonNames = new Set();
+          for (const wv of activeVehicles) {
+            if ((wv.install_mode || "replace") !== "addon") continue;
+            const nm = String(wv.target_model || "").toLowerCase();
+            const wt = String(wv.target_txd || nm).toLowerCase();
+            const wh = String(wv.target_handling || suggestHandlingId(nm)).trim();
+            const wk = String(wv.fxt_key || "").trim().toUpperCase();
+            if (seenAddonNames.has(nm)
+                || validateCustomModelName(nm, collectTakenModelNames(nm))
+                || !/^[a-z0-9_]{2,20}$/.test(wt)
+                || validateCustomHandlingId(wh)
+                || (wk && !/^[A-Z0-9_]{2,7}$/.test(wk))) {
+              showToast(window.t("install.newNameInvalidToast", "Fix the new model/texture name first (2-20 lowercase letters, digits or underscores, unique)"), "error");
+              return;
+            }
+            wv.target_handling = wh;
+            wv.fxt_key = wk;
+            seenAddonNames.add(nm);
+          }
+        }
+
+        // Addon vehicle IDs: user-editable, must be 612-65535 and free (or self)
+        payload.addon_id_assignments = collectAddonIdAssignments();
+        for (const [am, aid] of Object.entries(payload.addon_id_assignments)) {
+          if (!Number.isInteger(aid) || aid < 612 || aid > 65535) {
+            showToast(window.t("install.addonIdInvalid", "⚠️ Enter an ID between 612–65535"), "error");
+            return;
+          }
+        }
+        for (const [am, aid] of Object.entries(payload.addon_id_assignments)) {
+          try {
+            const cr = await fetch(`/api/ids/check?id=${aid}`);
+            const cd = await cr.json();
+            const occ = cd && cd.result;
+            if (cd.success && occ && !occ.is_free && ((occ.name || "").toLowerCase() !== am)) {
+              showToast(window.t("install.addonIdConflict", "Addon vehicle {0}: ID {1} unusable: {2}").replace("{0}", am.toUpperCase()).replace("{1}", aid).replace("{2}", occ.name || ""), "error");
+              return;
+            }
+          } catch (e) {}
+        }
+        // FLA killable ceiling: warn (not block) when exceeding the ini limit
+        const killCap = await ensureKillableLimit();
+        if (killCap != null) {
+          const over = Object.entries(payload.addon_id_assignments).filter(([, aid]) => aid >= killCap);
+          if (over.length > 0) {
+            const msg = window.t("install.addonIdOverKillableConfirm", "These addon vehicle IDs exceed the FLA killable limit {0}; destroyed vehicles may not register kills or crash the game (raise Count of killable model IDs in the ini and retry):\n{1}\nInstall anyway?").replace("{0}", killCap).replace("{1}", over.map(([am, aid]) => `${am.toUpperCase()} → ${aid}`).join(", "));
+            if (!(await showAppConfirm(msg))) return;
+          }
+        }
+
+        executeBtn.disabled = true;
+        executeBtn.textContent = loc({ en: "Checking existing installations..." });
+
         const reminder = await window.InstallReminder.beforeInstall(payload);
         if (reminder.action === "library") {
           switchTab("modsTab");
@@ -4790,6 +4786,10 @@ function setupInstaller() {
           return;
         }
         if (reminder.action !== "continue") return;
+        if (tuningGenerationAtSubmit !== tuningValidationGeneration) {
+          showToast(window.t("install.tuningChanged", "Tuning IDs changed during confirmation. Review them and install again."), "warning");
+          return;
+        }
         executeBtn.textContent = window.t("install.installingBtn", "🚀 Installing mod...");
         const res = await fetch("/api/installer/install", {
           method: "POST",
@@ -4815,7 +4815,8 @@ function setupInstaller() {
       } catch (err) {
         showToast((loc({ en: "Install request error: " })) + err.message, "error");
       } finally {
-        executeBtn.disabled = false;
+        tuningInstallBusy = false;
+        updateTuningSelectionSummary();
         executeBtn.textContent = window.t("install.btnConfirm", "Install");
       }
     });
@@ -5853,15 +5854,7 @@ function syncCurrentWizardFormToState() {
   const wizCat = document.getElementById("installWizardCarCategory");
   if (wizCat && curr) curr.category = wizCat.value;
 
-  curr.tuning_id_assignments = {};
-  document.querySelectorAll("#installTuningTableBody .input-id-edit").forEach(inp => {
-    if (inp.dataset.registered === "true" || inp.disabled) return;
-    const p = inp.dataset.part;
-    const v = parseInt(inp.value, 10);
-    if (p && !isNaN(v) && v >= 1000) {
-      curr.tuning_id_assignments[p] = v;
-    }
-  });
+  curr.tuning_id_assignments = collectTuningIdAssignments();
 
   const addonInp = document.getElementById("installAddonIdInput");
   if (addonInp && curr && isAddonModel(curr.target_model)) {
@@ -6584,10 +6577,10 @@ function renderInstallStep2(data) {
     if (tuningBadge) tuningBadge.textContent = window.t("install.partsCount", "{0} parts").replace("{0}", customParts.length);
     const hasConflict = customParts.some(p => p.is_conflict);
     if (conflictAlert) conflictAlert.style.display = hasConflict ? "block" : "none";
-    renderTuningPartsTable(customParts);
   } else {
     if (tuningCard) tuningCard.style.display = "none";
   }
+  renderTuningPartsTable(customParts);
 
   // Multi-vehicle wizard initialization
   const sharedCatNow = (catSelect.value || "Modded Cars");
@@ -6874,16 +6867,154 @@ function renderInstallResult(data) {
 
 // ---------------- Tuning Parts Table & Live ID Check ----------------
 
-function collectExcludedTuningParts() {
+let tuningValidationGeneration = 0;
+let tuningValidationTimer = null;
+let tuningInstallBusy = false;
+
+function tuningRows() {
   const tbody = document.getElementById("installTuningTableBody");
-  if (!tbody) return [];
-  const excluded = [];
-  tbody.querySelectorAll(".chk-tuning-part").forEach(chk => {
-    if (!chk.checked && chk.dataset.part) {
-      excluded.push(chk.dataset.part.toLowerCase());
+  return tbody ? Array.from(tbody.querySelectorAll("tr")) : [];
+}
+
+function setTuningRowState(row, state, detail = "") {
+  row.dataset.idState = state;
+  const labels = {
+    safe: ["statusFree", "🟢 Free & Safe", "free"],
+    registered: ["statusRegistered", "Keep ID", "registered"],
+    excluded: ["statusExcluded", "Skipped", "excluded"],
+    pending: ["statusChecking", "Checking ID...", "suggested"],
+    duplicate: ["statusDuplicate", "Duplicate ID in this installation", "conflict"],
+    invalid: ["statusInvalid", "❌ Invalid ID", "conflict"],
+    occupied: ["statusConflict", "⚠️ Conflict: ID In Use", "conflict"],
+    error: ["statusCheckFailed", "ID check failed — retry", "conflict"]
+  };
+  const [key, fallback, style] = labels[state];
+  const badge = document.createElement(state === "error" ? "button" : "span");
+  badge.className = `id-badge id-badge-${style}`;
+  badge.textContent = window.t(`install.${key}`, fallback);
+  badge.title = detail;
+  if (state === "error") {
+    badge.type = "button";
+    badge.addEventListener("click", () => refreshTuningValidation(true));
+  }
+  const cell = row.querySelector(".tuning-status-cell");
+  cell.innerHTML = "";
+  cell.appendChild(badge);
+  row.querySelector(".input-id-edit").classList.toggle("has-conflict",
+    ["duplicate", "invalid", "occupied", "error"].includes(state));
+}
+
+function updateTuningSelectionSummary() {
+  const rows = tuningRows();
+  const active = rows.filter(row => row.querySelector(".chk-tuning-part").checked);
+  const blocked = active.filter(row => !["safe", "registered"].includes(row.dataset.idState));
+  const pending = blocked.some(row => row.dataset.idState === "pending");
+  const conflicts = blocked.filter(row => row.dataset.idState !== "pending");
+  const master = document.getElementById("chkAllTuningParts");
+  if (master) {
+    master.checked = rows.length > 0 && active.length === rows.length;
+    master.indeterminate = active.length > 0 && active.length < rows.length;
+  }
+  const badge = document.getElementById("installTuningBadge");
+  if (badge) badge.textContent = window.t("install.partsCountRatio", "{0} / {1} parts")
+    .replace("{0}", active.length).replace("{1}", rows.length);
+  const summary = document.getElementById("tuningTableSummaryText");
+  if (summary) {
+    if (conflicts.length) {
+      summary.textContent = window.t("install.tuningBlocked", "{0} part(s) need a valid, conflict-free ID before installation")
+        .replace("{0}", conflicts.length);
+      summary.style.color = "var(--accent-red, #ef4444)";
+    } else if (pending) {
+      summary.textContent = window.t("install.tuningChecking", "Verifying selected tuning part IDs...");
+      summary.style.color = "var(--accent-amber, #f59e0b)";
+    } else if (!active.length) {
+      summary.textContent = window.t("install.tuningAllExcluded", "All tuning parts excluded from installation");
+      summary.style.color = "var(--text-muted)";
+    } else {
+      summary.textContent = window.t("install.tuningSelectedSafe", "All selected tuning parts verified conflict-free");
+      summary.style.color = "var(--accent-emerald)";
     }
-  });
-  return excluded;
+  }
+  const alert = document.getElementById("installTuningConflictAlert");
+  if (alert) {
+    alert.style.display = conflicts.length ? "block" : "none";
+    alert.textContent = window.t("install.tuningResolve", "Resolve the highlighted tuning IDs, auto-assign, or uncheck those parts to continue.");
+  }
+  const execute = document.getElementById("btnExecuteInstall");
+  if (execute) execute.disabled = tuningInstallBusy || blocked.length > 0;
+  return blocked.length === 0;
+}
+
+// Recompute local conflicts for the entire table immediately. Only the remote
+// occupancy checks are debounced; a generation prevents stale replies winning.
+function refreshTuningValidation(immediate = false) {
+  clearTimeout(tuningValidationTimer);
+  const generation = ++tuningValidationGeneration;
+  const owners = new Map();
+  const candidates = [];
+  for (const row of tuningRows()) {
+    const input = row.querySelector(".input-id-edit");
+    const selected = row.querySelector(".chk-tuning-part").checked;
+    row.classList.toggle("tuning-part-excluded", !selected);
+    input.disabled = !selected || input.dataset.registered === "true";
+    if (!selected) { setTuningRowState(row, "excluded"); continue; }
+    const raw = input.value.trim();
+    const id = Number(raw);
+    if (!/^[0-9]+$/.test(raw) || !Number.isInteger(id) || id < 1000 || id > 65535) {
+      setTuningRowState(row, "invalid", "Enter an integer between 1000 and 65535");
+      continue;
+    }
+    if (!owners.has(id)) owners.set(id, []);
+    owners.get(id).push(row);
+    setTuningRowState(row, "pending");
+    candidates.push({ row, id });
+  }
+  for (const [id, rows] of owners) {
+    if (rows.length > 1) {
+      const detail = `ID ${id}: ${rows.map(row => row.dataset.part).join(", ")}`;
+      rows.forEach(row => setTuningRowState(row, "duplicate", detail));
+    }
+  }
+  updateTuningSelectionSummary();
+  const check = async () => {
+    await Promise.all(candidates.filter(({ row }) => row.dataset.idState === "pending").map(async ({ row, id }) => {
+      try {
+        const res = await fetch(`/api/ids/check?id=${id}`);
+        const data = await res.json();
+        if (generation !== tuningValidationGeneration) return;
+        if (!res.ok || !data.success || !data.result || typeof data.result.is_free !== "boolean") throw new Error("Invalid ID check response");
+        const result = data.result;
+        const self = String(result.name || "").toLowerCase() === String(row.dataset.part).toLowerCase();
+        setTuningRowState(row, result.is_free || self ? "safe" : "occupied",
+          result.is_free ? "" : `${result.name || ""} (${result.file || ""})`);
+      } catch (err) {
+        if (generation === tuningValidationGeneration) setTuningRowState(row, "error", err.message);
+      } finally {
+        if (generation === tuningValidationGeneration) updateTuningSelectionSummary();
+      }
+    }));
+    return generation === tuningValidationGeneration && updateTuningSelectionSummary();
+  };
+  if (immediate) return check();
+  tuningValidationTimer = setTimeout(check, 300);
+}
+
+function collectExcludedTuningParts() {
+  return tuningRows().filter(row => !row.querySelector(".chk-tuning-part").checked)
+    .map(row => row.dataset.part.toLowerCase());
+}
+
+function collectTuningIdAssignments() {
+  const assignments = {};
+  for (const row of tuningRows()) {
+    const input = row.querySelector(".input-id-edit");
+    if (row.querySelector(".chk-tuning-part").checked && input.dataset.registered !== "true") {
+      // Preserve invalid text in saved wizard state; validation must reject it,
+      // never truncate decimals or silently omit an invalid assignment.
+      assignments[input.dataset.part] = input.value.trim();
+    }
+  }
+  return assignments;
 }
 
 function renderTuningPartsTable(parts) {
@@ -6891,204 +7022,95 @@ function renderTuningPartsTable(parts) {
   if (!tbody) return;
   tbody.innerHTML = "";
   parts.forEach(p => {
-    const tr = document.createElement("tr");
-    tr.dataset.part = p.part_name;
-    tr.dataset.status = p.status;
-
-    let statusBadge = "";
-    if (p.is_conflict) {
-      const reason = (window.I18N ? window.I18N.pick(p, "conflict_reason") : "") || p.conflict_reason || "";
-      statusBadge = `<span class="id-badge id-badge-conflict" title="${reason}">${window.t("install.statusConflict", "⚠️ Conflict: ID In Use")}</span>`;
-    } else if (p.status === "suggested_safe") {
-      statusBadge = `<span class="id-badge id-badge-suggested">${window.t("install.statusSuggested", "🟡 Mod Default (Free)")}</span>`;
-    } else if (p.status === "registered") {
-      statusBadge = `<span class="id-badge id-badge-registered">${window.t("install.statusRegistered", "Keep ID")}</span>`;
-    } else {
-      statusBadge = `<span class="id-badge id-badge-free">${window.t("install.statusFree", "🟢 Free & Safe")}</span>`;
-    }
-    tr.dataset.statusBadge = statusBadge;
-
-    const catDisplay = p.name_en || (p.name_cn ? (p.name_cn.match(/\(([^)]+)\)/)?.[1] || p.name_cn) : (p.category || "Tuning"));
-
-    tr.innerHTML = `
-      <td style="text-align:center; padding:6px 8px;">
-        <input type="checkbox" class="chk-tuning-part" data-part="${p.part_name}" checked title="${window.t("install.chkPartTooltip", "Include this tuning part in installation")}">
-      </td>
-      <td class="tuning-part-name-cell" style="font-family:var(--font-mono); font-weight:600; color:var(--text-bright);">
-        🛠️ ${p.part_name}
-      </td>
-      <td>
-        <span class="badge" style="background:#1f293d; color:var(--accent-cyan); font-size:11px;">${catDisplay}</span>
-      </td>
-      <td>
-        <input type="number" min="1000" max="65535" class="input-id-edit ${p.is_conflict ? 'has-conflict' : ''}" data-part="${p.part_name}" data-registered="${p.status === 'registered'}" value="${p.assigned_id || ''}" ${p.status === 'registered' ? 'disabled readonly' : ''}>
-      </td>
-      <td class="tuning-status-cell">
-        ${statusBadge}
-      </td>
-    `;
-    tbody.appendChild(tr);
-
-    // Checkbox toggle logic
-    const chk = tr.querySelector(".chk-tuning-part");
-    const input = tr.querySelector(".input-id-edit");
-    const statusCell = tr.querySelector(".tuning-status-cell");
-    chk.addEventListener("change", () => {
-      if (chk.checked) {
-        tr.classList.remove("tuning-part-excluded");
-        if (p.status !== "registered") {
-          input.disabled = false;
-        }
-        statusCell.innerHTML = statusBadge;
-      } else {
-        tr.classList.add("tuning-part-excluded");
-        input.disabled = true;
-        statusCell.innerHTML = `<span class="id-badge id-badge-excluded">${window.t("install.statusExcluded", "Skipped")}</span>`;
-      }
-      updateTuningSelectionSummary();
-    });
+    const row = document.createElement("tr");
+    row.dataset.part = p.part_name;
+    const selection = document.createElement("td");
+    selection.style.textAlign = "center";
+    selection.style.padding = "6px 8px";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.className = "chk-tuning-part";
+    checkbox.dataset.part = p.part_name;
+    checkbox.checked = true;
+    checkbox.title = window.t("install.chkPartTooltip", "Include this tuning part in installation");
+    selection.appendChild(checkbox);
+    const name = document.createElement("td");
+    name.className = "tuning-part-name-cell";
+    name.style.fontFamily = "var(--font-mono)";
+    name.style.fontWeight = "600";
+    name.style.color = "var(--text-bright)";
+    name.textContent = `🛠️ ${p.part_name}`;
+    const category = document.createElement("td");
+    const categoryBadge = document.createElement("span");
+    categoryBadge.className = "badge";
+    categoryBadge.style.cssText = "background:#1f293d; color:var(--accent-cyan); font-size:11px;";
+    categoryBadge.textContent = p.name_en || (p.name_cn ? (p.name_cn.match(/\(([^)]+)\)/)?.[1] || p.name_cn) : (p.category || "Tuning"));
+    category.appendChild(categoryBadge);
+    const idCell = document.createElement("td");
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = "1000";
+    input.max = "65535";
+    input.step = "1";
+    input.className = "input-id-edit";
+    input.dataset.part = p.part_name;
+    input.dataset.registered = String(p.status === "registered");
+    input.value = p.assigned_id || "";
+    input.readOnly = p.status === "registered";
+    idCell.appendChild(input);
+    const status = document.createElement("td");
+    status.className = "tuning-status-cell";
+    row.append(selection, name, category, idCell, status);
+    tbody.appendChild(row);
+    checkbox.addEventListener("change", () => refreshTuningValidation());
+    input.addEventListener("input", () => refreshTuningValidation());
   });
-
-  const updateTuningSelectionSummary = () => {
-    const allChecks = Array.from(tbody.querySelectorAll(".chk-tuning-part"));
-    const checkedCount = allChecks.filter(c => c.checked).length;
-    const totalCount = allChecks.length;
-    const masterChk = document.getElementById("chkAllTuningParts");
-    if (masterChk) {
-      masterChk.checked = checkedCount === totalCount;
-      masterChk.indeterminate = checkedCount > 0 && checkedCount < totalCount;
-    }
-    const badge = document.getElementById("installTuningBadge");
-    if (badge) {
-      badge.textContent = window.t("install.partsCountRatio", "{0} / {1} parts").replace("{0}", checkedCount).replace("{1}", totalCount);
-    }
-    const summaryEl = document.getElementById("tuningTableSummaryText");
-    if (summaryEl) {
-      if (checkedCount === 0) {
-        summaryEl.textContent = window.t("install.tuningAllExcluded", "All tuning parts excluded from installation");
-        summaryEl.style.color = "var(--text-muted)";
-      } else if (checkedCount < totalCount) {
-        summaryEl.textContent = window.t("install.tuningSomeExcluded", "{0} part(s) excluded from installation").replace("{0}", totalCount - checkedCount);
-        summaryEl.style.color = "var(--accent-amber, #f59e0b)";
-      } else {
-        summaryEl.textContent = window.t("install.tuningSafeText", "All tuning parts verified conflict-free");
-        summaryEl.style.color = "var(--accent-emerald)";
-      }
-    }
+  const master = document.getElementById("chkAllTuningParts");
+  if (master) master.onchange = () => {
+    tuningRows().forEach(row => { row.querySelector(".chk-tuning-part").checked = master.checked; });
+    refreshTuningValidation();
   };
-
-  // Master checkbox toggle
-  const masterChk = document.getElementById("chkAllTuningParts");
-  if (masterChk) {
-    masterChk.checked = true;
-    masterChk.indeterminate = false;
-    masterChk.onchange = () => {
-      const isChecked = masterChk.checked;
-      tbody.querySelectorAll("tr").forEach(tr => {
-        const chk = tr.querySelector(".chk-tuning-part");
-        const input = tr.querySelector(".input-id-edit");
-        const statusCell = tr.querySelector(".tuning-status-cell");
-        if (chk) chk.checked = isChecked;
-        if (isChecked) {
-          tr.classList.remove("tuning-part-excluded");
-          if (tr.dataset.status !== "registered") {
-            input.disabled = false;
-          }
-          statusCell.innerHTML = tr.dataset.statusBadge || "";
-        } else {
-          tr.classList.add("tuning-part-excluded");
-          input.disabled = true;
-          statusCell.innerHTML = `<span class="id-badge id-badge-excluded">${window.t("install.statusExcluded", "Skipped")}</span>`;
-        }
-      });
-      updateTuningSelectionSummary();
-    };
-  }
-
-  // Initial update
-  updateTuningSelectionSummary();
-
-  // Attach live debounced validation
-  let debounceTimer = null;
-  tbody.querySelectorAll(".input-id-edit").forEach(inp => {
-    inp.addEventListener("input", () => {
-      clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => {
-        validateSingleTuningInput(inp);
-      }, 300);
-    });
-  });
-
-  // Auto Reassign button
-  const btnAutoReassign = document.getElementById("btnAutoReassignIds");
-  if (btnAutoReassign) {
-    btnAutoReassign.onclick = async () => {
-      const activeInputs = Array.from(tbody.querySelectorAll(".input-id-edit")).filter(inp => !inp.disabled && inp.dataset.registered !== "true");
-      if (activeInputs.length === 0) return;
-      btnAutoReassign.disabled = true;
-      btnAutoReassign.textContent = window.t("install.autoAssigning", "⚡ Assigning IDs...");
+  const auto = document.getElementById("btnAutoReassignIds");
+  if (auto) {
+    auto.tuningOperation = null;
+    auto.disabled = false;
+    auto.textContent = window.t("install.btnAutoResetIds", "Auto-assign");
+    auto.onclick = async () => {
+      const inputs = tuningRows().map(row => row.querySelector(".input-id-edit"))
+        .filter(input => !input.disabled && input.dataset.registered !== "true");
+      if (!inputs.length || tuningInstallBusy) return;
+      const generation = tuningValidationGeneration;
+      const operation = {};
+      auto.tuningOperation = operation;
+      auto.disabled = true;
+      auto.textContent = window.t("install.autoAssigning", "⚡ Assigning IDs...");
       try {
         const res = await fetch("/api/ids/allocate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ count: activeInputs.length })
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ count: inputs.length })
         });
         const data = await res.json();
-        if (data.success && data.allocated) {
-          activeInputs.forEach((inp, idx) => {
-            if (idx < data.allocated.length) {
-              inp.value = data.allocated[idx];
-              inp.classList.remove("has-conflict");
-              const cell = inp.closest("tr").querySelector(".tuning-status-cell");
-              if (cell) cell.innerHTML = `<span class="id-badge id-badge-free">${loc({ en: "🟢 Free & Safe" })}</span>`;
-            }
-          });
-          const conflictAlert = document.getElementById("installTuningConflictAlert");
-          if (conflictAlert) conflictAlert.style.display = "none";
-          showToast(loc({ en: `Assigned safe IDs for ${data.allocated.length} parts!` }), "success");
+        if (generation !== tuningValidationGeneration) return;
+        if (!res.ok || !data.success || !Array.isArray(data.allocated) || data.allocated.length !== inputs.length) {
+          throw new Error(data.error || "Unable to allocate IDs for all selected parts");
         }
+        inputs.forEach((input, index) => { input.value = data.allocated[index]; });
+        if (await refreshTuningValidation(true)) showToast(loc({ en: `Assigned safe IDs for ${inputs.length} parts!` }), "success");
       } catch (err) {
-        showToast((loc({ en: "Failed to auto-assign IDs: " })) + err.message, "error");
+        if (generation === tuningValidationGeneration) showToast(loc({ en: "Failed to auto-assign IDs: " }) + err.message, "error");
       } finally {
-        btnAutoReassign.disabled = false;
-        btnAutoReassign.textContent = window.t("install.btnAutoResetIds", "Auto-assign");
+        if (auto.tuningOperation === operation) {
+          auto.disabled = false;
+          auto.textContent = window.t("install.btnAutoResetIds", "Auto-assign");
+        }
       }
     };
   }
-
-  // Open ID Pool from installer button
-  const btnOpenPool = document.getElementById("btnOpenIdPoolFromInstall");
-  if (btnOpenPool) {
-    btnOpenPool.onclick = () => openIdPoolModal();
-  }
+  const pool = document.getElementById("btnOpenIdPoolFromInstall");
+  if (pool) pool.onclick = () => openIdPoolModal();
+  refreshTuningValidation();
 }
 
-async function validateSingleTuningInput(inputElem) {
-  const val = parseInt(inputElem.value, 10);
-  const cell = inputElem.closest("tr").querySelector(".tuning-status-cell");
-  if (isNaN(val) || val < 1000) {
-    inputElem.classList.add("has-conflict");
-    if (cell) cell.innerHTML = `<span class="id-badge id-badge-conflict">${loc({ en: "❌ Invalid ID" })}</span>`;
-    return;
-  }
-
-  try {
-    const res = await fetch(`/api/ids/check?id=${val}`);
-    const data = await res.json();
-    if (data.success && data.result) {
-      if (data.result.is_free) {
-        inputElem.classList.remove("has-conflict");
-        if (cell) cell.innerHTML = `<span class="id-badge id-badge-free">${loc({ en: "🟢 Free & Safe" })}</span>`;
-      } else {
-        inputElem.classList.add("has-conflict");
-        const r = data.result;
-        if (cell) cell.innerHTML = `<span class="id-badge id-badge-conflict" title="${r.file} (${r.name})">${loc({ en: `🔴 Conflict: In use by ${r.name || "file"}` })}</span>`;
-      }
-    }
-  } catch (err) {
-    console.error("ID validation error:", err);
-  }
-}
 
 // ---------------- ID Pool Inspector Modal ----------------
 

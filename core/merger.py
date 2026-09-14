@@ -784,6 +784,24 @@ class ConfigMerger:
                     if parts[0].isdigit():
                         existing_ids.add(int(parts[0]))
 
+        # Never silently discard a second part with the same ID. Reject the
+        # batch before writing so apply_merge can roll back the whole merge.
+        pending_ids = {}
+        pending_parts = {}
+        for action in actions:
+            part = str(action.get("part", "")).lower()
+            part_id = action.get("id")
+            if part in existing_models:
+                continue
+            if part_id in existing_ids:
+                return {"success": False, "error": f"Tuning part {part}: ID {part_id} is already registered"}
+            if part_id in pending_ids and pending_ids[part_id] != part:
+                return {"success": False, "error": f"Tuning ID {part_id} is assigned to both {pending_ids[part_id]} and {part}"}
+            if part in pending_parts and pending_parts[part] != part_id:
+                return {"success": False, "error": f"Tuning part {part} has conflicting ID assignments"}
+            pending_ids[part_id] = part
+            pending_parts[part] = part_id
+
         new_lines = []
         in_objs = False
         inserted = False

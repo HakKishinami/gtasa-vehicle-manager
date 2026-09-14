@@ -1204,6 +1204,47 @@ class ModInstaller:
 
     # ---------------- Execute Installation ----------------
 
+    def _validate_requested_tuning_ids(self, params, vehicles):
+        """Validate the whole active batch before creating/copying any files."""
+        excluded = {str(p).strip().lower() for p in (params.get("excluded_tuning_parts") or [])}
+        assignments = {}
+        for source in [v.get("tuning_id_assignments", {}) for v in vehicles] + [params.get("tuning_id_assignments", {})]:
+            if not isinstance(source, dict):
+                return {"success": False, "error": "Invalid tuning ID assignments; expected a part-to-ID mapping"}
+            assignments.update({str(part).strip().lower(): value for part, value in source.items()})
+        if not assignments:
+            return {"success": True, "assignments": {}}
+        try:
+            existing = self.merger.tuning_mgr.get_existing_veh_mods()
+            assignments = {part: value for part, value in assignments.items()
+                           if part not in excluded and part not in existing}
+            occupied = self.id_mgr.scan_all_ides(force_refresh=True) if assignments else {}
+        except Exception as exc:
+            return {"success": False, "error": f"Unable to verify tuning IDs: {exc}"}
+
+        reserved = dict(params.get("addon_id_assignments") or {})
+        for vehicle in vehicles:
+            if vehicle.get("addon_id") is not None and vehicle.get("target_model") not in MODEL_TO_ID:
+                reserved[vehicle.get("target_model", "")] = vehicle["addon_id"]
+        owners = {}
+        normalized = {}
+        for part, raw_id in assignments.items():
+            value = str(raw_id).strip()
+            if not part or not re.fullmatch(r'[0-9]+', value) or not 1000 <= int(value) <= 65535:
+                return {"success": False, "error": f"Tuning part {part}: ID must be an integer between 1000 and 65535"}
+            part_id = int(value)
+            if part_id in owners:
+                return {"success": False, "error": f"Tuning ID {part_id} is assigned to both {owners[part_id]} and {part}"}
+            owners[part_id] = part
+            for model, addon_id in reserved.items():
+                if str(addon_id).strip().isdigit() and int(addon_id) == part_id:
+                    return {"success": False, "error": f"Tuning part {part}: ID {part_id} is also assigned to addon vehicle {model}"}
+            record = occupied.get(part_id)
+            if record and str(record.get("name", "")).lower() != part:
+                return {"success": False, "error": f"Tuning part {part}: ID {part_id} is already used by {record.get('name', '')} ({record.get('file', '')})"}
+            normalized[part] = part_id
+        return {"success": True, "assignments": normalized}
+
     def execute_install(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
         Deploy vehicle files into ModLoader and inject configs into shadow copies.
@@ -1246,6 +1287,10 @@ class ModInstaller:
 
         if not vehicles:
             return {"success": False, "error": "All selected vehicles were skipped; installation aborted."}
+
+        tuning_validation = self._validate_requested_tuning_ids(params, vehicles)
+        if not tuning_validation["success"]:
+            return tuning_validation
 
         # Class compatibility guard for addon -> replace conversions. A
         # package's handling.cfg line follows its own class schema (car and
@@ -2093,11 +2138,7 @@ class ModInstaller:
                         f"New vehicle {_tm_reg.upper()} was not added to vehicles.ide (missing available ID or IDE definition); it may not spawn in game")
 
             # Custom / User-assigned Tuning Part IDs: only include genuinely new parts
-            combined_custom_ids = {}
-            for v in vehicles:
-                combined_custom_ids.update(v.get("tuning_id_assignments", {}))
-            if params.get("tuning_id_assignments"):
-                combined_custom_ids.update(params.get("tuning_id_assignments"))
+            combined_custom_ids = dict(tuning_validation["assignments"])
             try:
                 existing_mods = self.merger.tuning_mgr.get_existing_veh_mods()
             except Exception:
