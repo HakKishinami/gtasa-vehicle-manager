@@ -179,10 +179,16 @@ class ModScanner:
                 p_clean = pname.lower().strip()
                 if re.match(r'^[a-z0-9_]{2,24}$', p_clean) and p_clean not in tuning_parts:
                     tuning_parts.append(p_clean)
-        for tdff in inspection["files"]["tuning_dffs"]:
-            pname = os.path.splitext(tdff["name"])[0].lower().strip()
-            if re.match(r'^[a-z0-9_]{2,24}$', pname) and pname not in tuning_parts:
-                tuning_parts.append(pname)
+        # Fallback to tuning_dffs only when no carmods lines exist for this mod
+        if not tuning_parts:
+            for tdff in inspection["files"]["tuning_dffs"]:
+                pname = os.path.splitext(tdff["name"])[0].lower().strip()
+                if (
+                    re.match(r'^[a-z0-9_]{2,24}$', pname)
+                    and not self.tuning_mgr.is_mirror_counterpart(pname, existing_shopping)
+                    and pname not in tuning_parts
+                ):
+                    tuning_parts.append(pname)
 
         missing_shopping_parts = [
             p for p in tuning_parts

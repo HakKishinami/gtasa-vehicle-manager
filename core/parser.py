@@ -1208,8 +1208,9 @@ class DualTrackParser:
                     archived_source_count += 1
                     continue  # Documentation only: never merge or infer vehicles from old source rows.
                 if f_lower.endswith(".dff"):
-                    # Check if tuning part
-                    is_tuning = any(f_lower.startswith(p) for p in KNOWN_TUNING_PREFIXES) or "tuning" in root.lower()
+                    # Check if tuning part (check prefixes or a 'tuning' subfolder inside mod)
+                    rel_dirs = [d.lower() for d in os.path.dirname(rel_path).replace("\\", "/").split("/") if d]
+                    is_tuning = any(f_lower.startswith(p) for p in KNOWN_TUNING_PREFIXES) or "tuning" in rel_dirs
                     if is_tuning:
                         tuning_dffs.append({"name": file, "rel_path": rel_path, "size": os.path.getsize(os.path.join(root, file))})
                     else:

@@ -4659,6 +4659,51 @@ class TestGhostVehicleExclusion(Fixture):
         self.assertIn("infernus", res["target_models"])
 
 
+class TuningPartsScannerConsistencyRegression(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="tuning_scan_")
+        self.addCleanup(self.temp.cleanup)
+        self.game = Path(self.temp.name) / "game"
+        (self.game / "data").mkdir(parents=True)
+        (self.game / "modloader" / "Modded Cars").mkdir(parents=True)
+        (self.game / "data" / "carmods.dat").write_text(
+            "mods\nsultan, exh_a_s, fbmp_a_s, nto_b_l\nend\n", encoding="utf-8"
+        )
+        (self.game / "data" / "shopping.dat").write_text(
+            "section carmods\n"
+            "exh_a_s\tEXH\trespect 0 sexy 0 350\n"
+            "fbmp_a_s\tBUMP\trespect 0 sexy 0 1000\n"
+            "nto_b_l\tNITRO\trespect 0 sexy 0 500\n"
+            "end\n",
+            encoding="utf-8"
+        )
+        self.scanner = ModScanner(str(self.game / "modloader" / "Modded Cars"), str(self.game))
+
+    def test_orphaned_tuning_dffs_do_not_inflate_part_count_or_trigger_shop_risk(self):
+        # Mod replaces sultan, has deployed carmods with 3 parts.
+        # But folder also has leftover/unrelated tuning dffs from deleted pack variants.
+        mod = self.game / "modloader" / "Modded Cars" / "Piccardi" / "Sultan"
+        mod.mkdir(parents=True)
+        (mod / "sultan.dff").write_bytes(b"dff")
+        (mod / "exh_a_s.dff").write_bytes(b"dff")
+        (mod / "fbmp_a_s.dff").write_bytes(b"dff")
+        # Leftovers from deleted variants (e.g. coupe/wagon parts)
+        (mod / "rf_a_sc.dff").write_bytes(b"dff")
+        (mod / "rf_a_sw.dff").write_bytes(b"dff")
+        (mod / "wg_l_a_sc.dff").write_bytes(b"dff")
+        (mod / "wg_r_a_s.dff").write_bytes(b"dff")
+        (mod / "readme.txt.used_source").write_text("# installed pack", encoding="utf-8")
+
+        mods = self.scanner.scan_installed_mods()
+        self.assertEqual(len(mods), 1)
+        m = mods[0]
+        self.assertEqual(m["target_model"], "sultan")
+        # Should only count the 3 parts configured in carmods.dat, not the 4 orphaned dffs
+        self.assertEqual(m["total_tuning_parts"], 3)
+        self.assertEqual(m["missing_shopping_parts"], [])
+        self.assertFalse(m["has_shopping_risk"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
