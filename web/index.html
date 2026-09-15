@@ -179,6 +179,7 @@
           <div class="inspector-actions">
             <button class="btn btn-warning" id="btnDryRun" disabled data-i18n="inspect.btnDryRun">⚡ Dry-Run Test</button>
             <button class="btn btn-primary" id="btnApplyMerge" disabled data-i18n="inspect.btnApplyMerge">💾 Apply & Merge</button>
+            <button class="btn btn-secondary" id="btnOpenCurrentModFolder" disabled title="Open this mod folder in Windows File Explorer" data-i18n="inspect.btnOpenFolder" data-i18n-title="inspect.btnOpenFolderTitle">📂 Open Folder</button>
             <button class="btn btn-secondary" id="btnRenameCurrentMod" disabled title="Rename this mod folder (merged configs are untouched)" data-i18n="inspect.btnRenameMod" data-i18n-title="inspect.btnRenameModTitle">✏️ Rename Folder</button>
             <span class="actions-separator" aria-hidden="true"></span>
             <button class="btn btn-danger-soft" id="btnDeleteCurrentMod" disabled title="Permanently delete mod folder and revert configurations" data-i18n="inspect.btnDeleteMod" data-i18n-title="inspect.btnDeleteModTitle">🗑️ Delete Mod</button>
@@ -556,6 +557,9 @@
               <button type="button" class="btn btn-secondary btn-sm" id="btnToggleDataCopyFind" title="Find in file (Ctrl+F)" data-i18n-title="datacopy.btnFindTitle">
                 <span>🔍</span> <span data-i18n="datacopy.btnFind">Find</span>
               </button>
+              <button type="button" class="btn btn-secondary btn-sm" id="btnToggleDataCopyMaximize" title="Toggle full window view (Esc to restore)" data-i18n-title="datacopy.btnMaximizeTitle">
+                <span id="dataCopyMaximizeIcon">⛶</span> <span id="dataCopyMaximizeText" data-i18n="datacopy.btnMaximize">Maximize</span>
+              </button>
               <div class="data-copy-status-wrap">
                 <span id="dataCopyStatusBadge" class="badge badge-success" data-i18n="datacopy.savedBadge">✓ Saved</span>
               </div>
@@ -602,6 +606,8 @@
               <span id="dataCopyCharsDisplay">0 chars</span>
               <span class="footer-separator">•</span>
               <span class="footer-encoding" id="dataCopyEncodingDisplay">UTF-8 / CRLF</span>
+              <span class="footer-separator">•</span>
+              <span class="footer-zoom" id="dataCopyFontSizeDisplay" title="Zoom font size (Ctrl+Wheel or click to cycle)" data-i18n-title="datacopy.fontSizeTitle" style="cursor:pointer; user-select:none;">🔍 12px</span>
             </div>
           </div>
         </div>

@@ -113,3 +113,47 @@ test('CSS defines active line strip and glowing bounding box for search matches'
   assert.match(css, /animation:\s*dataCopyPulse/, 'pulse glow animation exists');
 });
 
+test('Inspector header includes btnOpenCurrentModFolder before btnRenameCurrentMod', () => {
+  assert.match(html, /id="btnOpenCurrentModFolder"[^>]*>.*id="btnRenameCurrentMod"/s, 'Open Folder button is positioned before Rename Folder button');
+  assert.match(i18n, /"inspect\.btnOpenFolder":/, 'inspect.btnOpenFolder translation key exists');
+  assert.match(i18n, /"inspect\.btnOpenFolderTitle":/, 'inspect.btnOpenFolderTitle translation key exists');
+  assert.match(appJs, /btnOpenCurrentModFolder/, 'app.js references and wires btnOpenCurrentModFolder');
+});
+
+test('Data Copies maximize and font zoom controls and styles are implemented', () => {
+  const css = fs.readFileSync(path.join(root, 'web', 'style.css'), 'utf8');
+
+  // DOM elements
+  assert.match(html, /id="btnToggleDataCopyMaximize"/, 'Maximize button exists in HTML');
+  assert.match(html, /id="dataCopyFontSizeDisplay"/, 'Font size display exists in HTML');
+
+  // i18n keys
+  const zoomKeys = [
+    'datacopy.btnMaximize',
+    'datacopy.btnMaximizeRestore',
+    'datacopy.btnMaximizeTitle',
+    'datacopy.fontSizeTitle',
+    'datacopy.fontSizeZoom',
+  ];
+  for (const k of zoomKeys) {
+    assert.ok(i18n.includes(`"${k}":`), `Missing zoom i18n key: ${k}`);
+  }
+
+  // CSS rules
+  assert.match(css, /\.data-copies-card\.is-maximized\s*\{[^}]*position:\s*fixed\s*!important/s, 'is-maximized fixed rule exists');
+  assert.match(css, /\.data-copies-card\s*\{[^}]*--data-copy-font-size:/s, 'CSS variable --data-copy-font-size exists');
+  assert.match(css, /\.data-copy-line-numbers\s*\{[^}]*var\(--data-copy-font-size/s, 'line numbers use dynamic font size');
+  assert.match(css, /\.data-copy-textarea\s*\{[^}]*var\(--data-copy-font-size/s, 'textarea uses dynamic font size');
+  assert.match(css, /\.footer-zoom:hover/, 'footer-zoom hover effect exists');
+
+  // app.js functions & handlers
+  assert.match(appJs, /function toggleDataCopyMaximize/, 'toggleDataCopyMaximize function exists');
+  assert.match(appJs, /function setDataCopyFontSize/, 'setDataCopyFontSize function exists');
+  assert.match(appJs, /function getDataCopyLineHeight/, 'getDataCopyLineHeight function exists');
+  assert.match(appJs, /btnToggleDataCopyMaximize/, 'wires btnToggleDataCopyMaximize');
+  assert.match(appJs, /dataCopyFontSizeDisplay/, 'wires dataCopyFontSizeDisplay');
+  assert.match(appJs, /localStorage\.getItem\("dataCopyFontSize"\)/, 'persists font size in localStorage');
+});
+
+
+

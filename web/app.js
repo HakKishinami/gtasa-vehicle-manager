@@ -777,18 +777,109 @@ let dataCopiesIsDirty = false;
 let dataCopiesIsReadOnly = false;
 let dataCopiesFindMatches = [];
 let dataCopiesFindIndex = -1;
+let dataCopyFontSize = 12;
+let dataCopyIsMaximized = false;
+const DATA_COPY_FONT_SIZES = [11, 12, 14, 16, 18];
+
+function getDataCopyLineHeight() {
+  return Math.round(dataCopyFontSize * 1.6667);
+}
+
+function setDataCopyFontSize(size, showNotification = true) {
+  const clamped = Math.max(10, Math.min(24, Math.round(size)));
+  dataCopyFontSize = clamped;
+  try {
+    localStorage.setItem("dataCopyFontSize", String(clamped));
+  } catch (e) {}
+
+  const card = document.querySelector(".data-copies-card");
+  const lh = getDataCopyLineHeight();
+  if (card) {
+    card.style.setProperty("--data-copy-font-size", `${clamped}px`);
+    card.style.setProperty("--data-copy-line-height", `${lh}px`);
+  }
+
+  const displayEl = document.getElementById("dataCopyFontSizeDisplay");
+  if (displayEl) {
+    displayEl.textContent = `🔍 ${clamped}px`;
+  }
+
+  dataCopyCharWidthCache = null;
+  if (dataCopyMeasureEl) {
+    dataCopyMeasureEl.style.fontSize = `${clamped}px`;
+    dataCopyMeasureEl.style.lineHeight = `${lh}px`;
+  }
+
+  renderDataCopyHighlights();
+
+  if (showNotification) {
+    showToast(t("datacopy.fontSizeZoom", "Font size: {0}px", clamped), "info");
+  }
+}
+
+function toggleDataCopyMaximize(forceState = null) {
+  const card = document.querySelector(".data-copies-card");
+  if (!card) return;
+
+  const newState = (forceState !== null) ? Boolean(forceState) : !dataCopyIsMaximized;
+  dataCopyIsMaximized = newState;
+
+  card.classList.toggle("is-maximized", newState);
+
+  const iconEl = document.getElementById("dataCopyMaximizeIcon");
+  const textEl = document.getElementById("dataCopyMaximizeText");
+  const btn = document.getElementById("btnToggleDataCopyMaximize");
+
+  if (newState) {
+    if (iconEl) iconEl.textContent = "🗗";
+    if (textEl) textEl.textContent = t("datacopy.btnMaximizeRestore", "Restore");
+    if (btn) btn.title = t("datacopy.btnMaximizeTitle", "Toggle full window view (Esc to restore)");
+  } else {
+    if (iconEl) iconEl.textContent = "⛶";
+    if (textEl) textEl.textContent = t("datacopy.btnMaximize", "Maximize");
+    if (btn) btn.title = t("datacopy.btnMaximizeTitle", "Toggle full window view (Esc to restore)");
+  }
+
+  setTimeout(() => {
+    renderDataCopyHighlights();
+  }, 50);
+}
 
 function setupDataCopiesModule() {
   const folderSelect = document.getElementById("dataCopyFolderSelect");
   const saveBtn = document.getElementById("btnSaveDataCopy");
   const reloadBtn = document.getElementById("btnReloadDataCopy");
   const toggleFindBtn = document.getElementById("btnToggleDataCopyFind");
+  const toggleMaximizeBtn = document.getElementById("btnToggleDataCopyMaximize");
+  const fontDisplay = document.getElementById("dataCopyFontSizeDisplay");
   const findInput = document.getElementById("dataCopyFindInput");
   const findCloseBtn = document.getElementById("btnDataCopyFindClose");
   const findNextBtn = document.getElementById("btnDataCopyFindNext");
   const findPrevBtn = document.getElementById("btnDataCopyFindPrev");
   const textarea = document.getElementById("dataCopyTextarea");
   const lineNumbers = document.getElementById("dataCopyLineNumbers");
+
+  try {
+    const saved = localStorage.getItem("dataCopyFontSize");
+    if (saved) {
+      const parsed = parseInt(saved, 10);
+      if (!isNaN(parsed) && parsed >= 10 && parsed <= 24) {
+        setDataCopyFontSize(parsed, false);
+      }
+    }
+  } catch (e) {}
+
+  if (toggleMaximizeBtn) {
+    toggleMaximizeBtn.addEventListener("click", () => toggleDataCopyMaximize());
+  }
+
+  if (fontDisplay) {
+    fontDisplay.addEventListener("click", () => {
+      const curIdx = DATA_COPY_FONT_SIZES.indexOf(dataCopyFontSize);
+      const nextIdx = (curIdx + 1) % DATA_COPY_FONT_SIZES.length;
+      setDataCopyFontSize(DATA_COPY_FONT_SIZES[nextIdx], true);
+    });
+  }
 
   if (folderSelect) {
     folderSelect.addEventListener("change", async () => {
@@ -887,6 +978,17 @@ function setupDataCopiesModule() {
       renderDataCopyHighlights();
     });
 
+    textarea.addEventListener("wheel", (e) => {
+      if (e.ctrlKey) {
+        e.preventDefault();
+        if (e.deltaY < 0) {
+          setDataCopyFontSize(dataCopyFontSize + 1, false);
+        } else if (e.deltaY > 0) {
+          setDataCopyFontSize(dataCopyFontSize - 1, false);
+        }
+      }
+    }, { passive: false });
+
     textarea.addEventListener("keydown", (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
@@ -906,13 +1008,32 @@ function setupDataCopiesModule() {
     });
   }
 
-  // Global shortcut: when in dataCopiesTab, Ctrl+F opens find
+  // Global shortcuts for Data Copies: Ctrl+F, Ctrl+=, Ctrl+-, Ctrl+0, F11, Esc
   window.addEventListener("keydown", (e) => {
+    const tab = document.getElementById("dataCopiesTab");
+    const isTabActive = tab && tab.classList.contains("active");
+
+    if (!isTabActive && !dataCopyIsMaximized) return;
+
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
-      const tab = document.getElementById("dataCopiesTab");
-      if (tab && tab.classList.contains("active")) {
+      e.preventDefault();
+      openDataCopyFindWidget();
+    } else if ((e.ctrlKey || e.metaKey) && (e.key === "=" || e.key === "+")) {
+      e.preventDefault();
+      setDataCopyFontSize(dataCopyFontSize + 1, true);
+    } else if ((e.ctrlKey || e.metaKey) && (e.key === "-" || e.key === "_")) {
+      e.preventDefault();
+      setDataCopyFontSize(dataCopyFontSize - 1, true);
+    } else if ((e.ctrlKey || e.metaKey) && e.key === "0") {
+      e.preventDefault();
+      setDataCopyFontSize(12, true);
+    } else if (e.key === "F11") {
+      e.preventDefault();
+      toggleDataCopyMaximize();
+    } else if (e.key === "Escape") {
+      if (dataCopyIsMaximized) {
         e.preventDefault();
-        openDataCopyFindWidget();
+        toggleDataCopyMaximize(false);
       }
     }
   });
@@ -1165,8 +1286,8 @@ function getDataCopyMeasureEl() {
     dataCopyMeasureEl.style.pointerEvents = "none";
     dataCopyMeasureEl.style.whiteSpace = "pre";
     dataCopyMeasureEl.style.fontFamily = "'Consolas', 'Fira Code', monospace";
-    dataCopyMeasureEl.style.fontSize = "12px";
-    dataCopyMeasureEl.style.lineHeight = "20px";
+    dataCopyMeasureEl.style.fontSize = `${dataCopyFontSize}px`;
+    dataCopyMeasureEl.style.lineHeight = `${getDataCopyLineHeight()}px`;
     dataCopyMeasureEl.style.tabSize = "4";
     document.body.appendChild(dataCopyMeasureEl);
   }
@@ -1212,7 +1333,7 @@ function renderDataCopyHighlights() {
   const scrollLeft = textarea.scrollLeft;
   const clientHeight = textarea.clientHeight;
   const clientWidth = textarea.clientWidth;
-  const lineHeight = 20;
+  const lineHeight = getDataCopyLineHeight();
   const paddingTop = 12;
   const paddingLeft = 14;
 
@@ -1332,7 +1453,7 @@ function jumpToDataCopyMatch(index) {
   const text = textarea.value;
   const lineStart = text.lastIndexOf("\n", match.start - 1) + 1;
   const linesBefore = (text.substring(0, lineStart).match(/\n/g) || []).length;
-  const lineHeight = 20;
+  const lineHeight = getDataCopyLineHeight();
 
   // Vertical scroll: keep match visible with comfortable headroom
   const targetScrollTop = Math.max(0, (linesBefore * lineHeight) - 120);
@@ -1943,11 +2064,11 @@ function resetInspectorView() {
   const authorEl = document.getElementById("inspectAuthor");
   if (authorEl) authorEl.textContent = "--";
 
-  ["btnDryRun", "btnApplyMerge", "btnDeleteCurrentMod", "btnRenameCurrentMod"].forEach(id => {
+  ["btnDryRun", "btnApplyMerge", "btnDeleteCurrentMod", "btnRenameCurrentMod", "btnOpenCurrentModFolder"].forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
     el.disabled = true;
-    if (id === "btnDeleteCurrentMod" || id === "btnRenameCurrentMod") el.onclick = null;
+    if (id === "btnDeleteCurrentMod" || id === "btnRenameCurrentMod" || id === "btnOpenCurrentModFolder") el.onclick = null;
   });
 
   if (typeof resetAllCardEditors === "function") resetAllCardEditors();
@@ -2047,6 +2168,30 @@ async function inspectMod(modSummary) {
       if (!current || !current.full_path) return;
       const modelsArg = (current.target_models && current.target_models.length > 0) ? current.target_models.join(',') : (current.target_model || "");
       requestDeleteMod(encodeURIComponent(current.full_path), encodeURIComponent(current.name), modelsArg);
+    };
+  }
+
+  const btnOpenFolder = document.getElementById("btnOpenCurrentModFolder");
+  if (btnOpenFolder) {
+    btnOpenFolder.disabled = false;
+    btnOpenFolder.onclick = async () => {
+      const current = activeMod;
+      if (!current || !current.full_path) return;
+      try {
+        const res = await fetch("/api/open-folder", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: current.full_path })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast(loc({ en: `Opened in File Explorer: ${current.name || "mod folder"}` }), "success");
+        } else {
+          showToast((loc({ en: "Failed to open folder: " })) + (data.error || ""), "error");
+        }
+      } catch (err) {
+        showToast((loc({ en: "Request failed: " })) + err.message, "error");
+      }
     };
   }
 

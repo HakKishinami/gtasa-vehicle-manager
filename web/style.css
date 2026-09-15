@@ -4066,6 +4066,8 @@ pre {
 }
 
 .data-copies-card {
+  --data-copy-font-size: 12px;
+  --data-copy-line-height: 20px;
   display: flex;
   flex-direction: column;
   height: calc(100vh - 164px);
@@ -4073,6 +4075,19 @@ pre {
   margin-bottom: 0 !important;
   padding: 0 !important;
   overflow: hidden;
+}
+
+.data-copies-card.is-maximized {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  max-height: 100vh !important;
+  z-index: 500 !important;
+  border-radius: 0 !important;
+  margin: 0 !important;
+  border: none !important;
 }
 
 .data-copy-toolbar {
@@ -4175,8 +4190,8 @@ pre {
   border-right: 1px solid var(--border);
   color: #475569;
   font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 20px;
+  font-size: var(--data-copy-font-size, 12px);
+  line-height: var(--data-copy-line-height, 20px);
   text-align: right;
   padding: 12px 8px 12px 0;
   user-select: none;
@@ -4253,8 +4268,8 @@ pre {
   border: none;
   color: var(--text-bright);
   font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 20px;
+  font-size: var(--data-copy-font-size, 12px);
+  line-height: var(--data-copy-line-height, 20px);
   padding: 12px 14px;
   resize: none;
   outline: none;
@@ -4353,4 +4368,8 @@ pre {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.footer-zoom:hover {
+  color: var(--accent-cyan) !important;
 }
