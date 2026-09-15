@@ -3851,6 +3851,7 @@ pre {
 }
 /* Existing-model reminder: paths are text, actions never delete automatically. */
 .install-existing-dialog {
+  margin: auto;
   width: min(680px, 85vw); max-height: 85vh; padding: 24px;
   color: var(--text-main, #e5e7eb); background: #101724;
   border: 1px solid #334155; border-radius: 12px;

@@ -104,9 +104,10 @@ def update_fxt_entry(mod_dir, key, name, model_hint="", backup_manager=None):
         return {"success": False, "error": "Invalid FXT key (must be 2-40 uppercase alphanumeric characters or underscores)"}
 
     name = (name or "").strip()
-    name_error = validate_fxt_name(name)
-    if name_error:
-        return {"success": False, "error": name_error}
+    if name:
+        name_error = validate_fxt_name(name)
+        if name_error:
+            return {"success": False, "error": name_error}
 
     base = os.path.normpath(mod_dir)
     targets = []
@@ -132,6 +133,72 @@ def update_fxt_entry(mod_dir, key, name, model_hint="", backup_manager=None):
                 continue
             if any(line_key(ln) == key for ln in text.splitlines()):
                 targets.append((path, codec, text))
+
+    if not name:
+        # Empty name indicates reverting to vanilla in-game name:
+        # remove the key's mapping from any .fxt files and delete
+        # the file if it contains no other active mappings.
+        if not targets:
+            return {"success": True, "key": key, "name": "", "files": [], "deleted": False, "reverted_to_vanilla": True}
+
+        written, deleted, errors = [], [], []
+
+        def _apply_delete():
+            for path, codec, text in targets:
+                remaining = []
+                removed = False
+                for line in text.splitlines(keepends=True):
+                    body = line.rstrip("\r\n")
+                    if line_key(body) == key:
+                        removed = True
+                    else:
+                        remaining.append(line)
+                if not removed:
+                    continue
+                if backup_manager is not None:
+                    backup_manager.backup_file(path)
+                has_active = any(
+                    ln.strip() and not ln.strip().startswith(('#', ';', '//'))
+                    for ln in remaining
+                )
+                if not has_active:
+                    try:
+                        os.remove(path)
+                        deleted.append(path)
+                    except OSError as exc:
+                        errors.append(f"{os.path.basename(path)}: {exc}")
+                else:
+                    try:
+                        write_bytes_atomic(path, "".join(remaining).encode(codec))
+                        written.append(path)
+                    except (OSError, UnicodeEncodeError) as exc:
+                        errors.append(f"{os.path.basename(path)}: {exc}")
+
+        snapshot_dir = None
+        if backup_manager is not None:
+            with backup_manager.snapshot('edit_fxt', 'Remove FXT vehicle name entry') as snapshot_dir:
+                _apply_delete()
+        else:
+            _apply_delete()
+
+        if errors:
+            rolled_back = True
+            if backup_manager is not None and snapshot_dir:
+                res = backup_manager.restore_snapshot(os.path.basename(snapshot_dir))
+                rolled_back = bool(res.get("success"))
+            return {
+                "success": False,
+                "rolled_back": rolled_back,
+                "error": "Delete failed, rolled back: " + "; ".join(errors),
+            }
+        return {
+            "success": True,
+            "key": key,
+            "name": "",
+            "files": written + deleted,
+            "deleted": bool(deleted),
+            "reverted_to_vanilla": True,
+        }
 
     if not targets:
         # The key is not deployed yet: create the file the game will load.
@@ -251,6 +318,15 @@ def deploy_fxt(source_files, vehicles, destinations, source_keys, backup_manager
         original = owned[0] if owned else preferred or model.upper()
         author = source_rows.get(original)
         enabled = vehicle.get('generate_fxt', True)
+        is_addon = (
+            vehicle.get('category') == 'Addon Cars'
+            or vehicle.get('addon_id') is not None
+            or bool(vehicle.get('is_addon'))
+        )
+        fxt_name_val = (vehicle.get('fxt_name') or '').strip()
+        # For replacement vehicles without author FXT: if generate_fxt is False or fxt_name is empty, do not deploy FXT
+        if not is_addon and not author and (not enabled or not fxt_name_val):
+            continue
         if not enabled and not author:
             continue
         managed.update(k for k, owners in aliases.items() if index in owners)
@@ -267,11 +343,6 @@ def deploy_fxt(source_files, vehicles, destinations, source_keys, backup_manager
 
         author_file = os.path.basename(author[1]) if author else None
         fxt_filename = target + '.fxt'
-        is_addon = (
-            vehicle.get('category') == 'Addon Cars'
-            or vehicle.get('addon_id') is not None
-            or bool(vehicle.get('is_addon'))
-        )
         if author_file:
             author_stem = os.path.splitext(author_file)[0].lower()
             other_models = {

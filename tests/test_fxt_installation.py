@@ -53,6 +53,14 @@ class FxtRoutingRegression(unittest.TestCase):
         self.assertTrue(created.exists())
         self.assertEqual(created.read_bytes(), b'CHEETAH Cheetah GT\r\n')
 
+    def test_replacement_without_author_fxt_and_empty_name_creates_no_fxt(self):
+        vehicles = [dict(source_model='glenshit', target_model='glenshit', fxt_key='GLENSHI',
+                         fxt_name='', generate_fxt=False, is_addon=False)]
+        changed, _ = deploy_fxt([], vehicles, [str(self.dest[0])], {}, self.backup)
+        self.assertEqual(changed, [])
+        fxts = list(self.dest[0].glob('*.fxt'))
+        self.assertEqual(fxts, [])
+
     def test_cheetah_pack_routes_individual_author_files_without_duplicates(self):
         files = [self.author('cheetah.fxt', 'CHEETAH Cheetah GT'),
                  self.author('cheet86.fxt', 'CHEET86 Cheetah'),

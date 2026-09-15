@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>GTASA Vehicle Mod Manager</title>
-  <link rel="stylesheet" href="style.css?v=20260914-tuninglayout1">
+  <link rel="stylesheet" href="style.css?v=20260915-dialogcenter1">
 </head>
 <body>
   <div class="app-container">
@@ -205,7 +205,7 @@
               <div class="card-edit-body" id="fxtEditContainer" style="display:none; padding:10px 14px;">
                 <label for="inputFxtName" class="form-label" data-i18n="inspect.fxtEditLabel">In-game display name (written to the mod .fxt file, auto-loaded by ModLoader):</label>
                 <div class="input-with-btn">
-                  <input type="text" id="inputFxtName" class="form-control" maxlength="64" spellcheck="false" style="flex:1;">
+                  <input type="text" id="inputFxtName" class="form-control" maxlength="64" spellcheck="false" style="flex:1;" placeholder="Leave empty to use vanilla in-game name" data-i18n-placeholder="inspect.fxtPlaceholderVanilla">
                   <button type="button" class="btn btn-primary btn-sm" id="btnSaveFxtName" data-i18n="inspect.btnSaveFxt">💾 Save Name</button>
                 </div>
                 <div class="field-hint" id="fxtEditKeyHint" style="margin-top:4px;"></div>
@@ -811,6 +811,7 @@
                         <input type="text" id="installNewTxdName" class="form-control" maxlength="20" spellcheck="false" autocomplete="off" placeholder="Defaults to the model name" data-i18n-placeholder="install.newTxdPlaceholder">
                         <label for="installNewHandlingId" class="form-label" style="margin-top:8px;" data-i18n="install.newHandlingLabel">Internal handling ID (handling.cfg first column / vehicles.ide Handling column)</label>
                         <input type="text" id="installNewHandlingId" class="form-control" maxlength="14" spellcheck="false" autocomplete="off" placeholder="Derived from the model name, e.g. PREVION2" data-i18n-placeholder="install.newHandlingPlaceholder">
+                        <div id="installHandlingSharedHint" class="field-hint" style="display:none; margin-top:4px; line-height:1.4; color:var(--accent-cyan);" data-i18n="install.handlingSharedHint">Shared handling ID: {0} (shares physics with {0}; no separate handling line will be created).</div>
                         <div class="field-hint" style="margin-top:6px; line-height:1.5;" data-i18n="install.newNameHint">DFF/TXD files are renamed automatically and registered as a new ID with handling/carcols/carmods/FLA data; the original car is left untouched.</div>
                         <div class="field-hint" style="color:#f85149; min-height:16px;" id="installNewNameError"></div>
                       </div>
@@ -830,7 +831,7 @@
                         </div>
                         <div>
                           <label class="form-label" data-i18n="install.fxtNameLabel">In-game name</label>
-                          <input type="text" id="installFxtName">
+                          <input type="text" id="installFxtName" placeholder="Leave empty to use vanilla in-game name" data-i18n-placeholder="install.fxtPlaceholderVanilla">
                         </div>
                       </div>
                       <div id="installFxtInheritHint" class="field-hint" style="display:none; margin-top:6px; line-height:1.5;" data-i18n="install.fxtInheritHint">Package reuses the game's own GXT entry ({0}); no name override will be written.</div>

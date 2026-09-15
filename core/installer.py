@@ -277,8 +277,9 @@ def _package_asset_index(parser: DualTrackParser, directory: str) -> Dict[str, A
     - parts: tuning part names referenced by carmods.dat / veh_mods.ide /
       shopping.dat, so a part file is never mistaken for a vehicle
     - declared_txd: model -> TXD name declared in vehicles.ide documents
+    - declared_handling: model -> Handling ID declared in vehicles.ide documents
     """
-    index: Dict[str, Any] = {"dffs": set(), "txds": set(), "parts": set(), "declared_txd": {}}
+    index: Dict[str, Any] = {"dffs": set(), "txds": set(), "parts": set(), "declared_txd": {}, "declared_handling": {}}
     for root, _, files in os.walk(directory):
         for fname in files:
             lower = fname.lower()
@@ -302,6 +303,10 @@ def _package_asset_index(parser: DualTrackParser, directory: str) -> Dict[str, A
                     name = toks[2].lower()
                     if re.fullmatch(r'[a-z0-9_]{2,20}', name):
                         index["declared_txd"].setdefault(toks[1].lower(), name)
+                if len(toks) >= 5 and toks[1] and toks[4]:
+                    hid = toks[4].strip().upper()
+                    if re.fullmatch(r'[A-Za-z0-9_]{2,14}', hid):
+                        index["declared_handling"].setdefault(toks[1].lower(), hid)
             index["parts"].update(_part_names_from_parsed(parser, parsed))
     return index
 
@@ -346,6 +351,18 @@ class ModInstaller:
                         names.setdefault(toks[5].upper(), info.get("name") or toks[1].upper())
             except Exception:
                 names = {}
+            _known_diff = {
+                "glenshit": "GLENSHI", "copcarla": "COPCAR", "copcarsf": "COPCAR",
+                "copcarvg": "COPCAR", "copcarru": "RUCAR", "fbiranch": "FBIRAN",
+            }
+            for vid, info in VANILLA_VEHICLES.items():
+                m_lower = info["model"].lower()
+                m_upper = info["model"].upper()
+                vname = info.get("name") or m_upper
+                names.setdefault(m_upper, vname)
+                diff_key = _known_diff.get(m_lower)
+                if diff_key:
+                    names.setdefault(diff_key, vname)
             self._vanilla_gxt_names_cache = names
         return self._vanilla_gxt_names_cache
 
@@ -712,7 +729,7 @@ class ModInstaller:
             if len(_toks) >= 3 and _toks[1] and _toks[2]:
                 _ide_txd[_toks[1].lower()] = _toks[2].lower()
             if len(_toks) >= 5:
-                _ide_handling[_toks[1].lower()] = _toks[4].lower()
+                _ide_handling[_toks[1].lower()] = _toks[4].strip().upper()
             if len(_toks) >= 6:
                 _ide_game_names[_toks[1].lower()] = _toks[5].strip()
         _carcols_models = set()
@@ -769,6 +786,12 @@ class ModInstaller:
             _declared_txd = _ide_txd.get(m.lower(), "")
             v["declared_txd"] = _declared_txd if re.fullmatch(r'[a-z0-9_]{2,20}', _declared_txd or "") else ""
 
+            # Handling ID the author declared in vehicles.ide. A new model
+            # may deliberately reuse another car's physics (e.g. secua shares
+            # SOLAIRSD), so the declared column is preserved.
+            _declared_handling = _ide_handling.get(m.lower(), "")
+            v["declared_handling"] = _declared_handling if re.fullmatch(r'[A-Za-z0-9_]{2,14}', _declared_handling or "") else ""
+
             # Find vehicle-specific fxt if present
             v_fxt_key = _ide_game_names.get(m.lower(), m.upper()).upper()
             v_fxt_name = ""
@@ -803,13 +826,28 @@ class ModInstaller:
                             v_fxt_name = parts[1]
                         break
 
-            if not v_fxt_name:
+            if not v_fxt_name and len(target_vehicles) == 1:
+                _vname_match = re.search(
+                    r'(?im)^\s*(?:vehicle\s*name|car\s*name|model\s*name|display\s*name|车辆名称|车名|车辆名字)\s*[:：\-]\s*([^\r\n,;]+)',
+                    combined_text
+                )
+                if _vname_match:
+                    _cand = _vname_match.group(1).strip()
+                    if 2 <= len(_cand) <= 64 and not re.search(r'(?i)\b(unknown|none|gta|car|vehicle)\b$', _cand):
+                        v_fxt_name = _cand
+
+            if not v.get("is_addon") and not v_has_author_fxt:
+                # Any replacement vehicle without an author-provided on-disk .fxt file
+                # naturally inherits the vanilla game's built-in GXT entry.
                 _vanilla_entry_name = self._vanilla_gxt_names().get(v_fxt_key, "")
                 if _vanilla_entry_name:
-                    # The package points its model at a key the game already
-                    # defines: it inherits that display name, so nothing is
-                    # invented and no .fxt override is written (the wizard
-                    # leaves its GXT/name fields empty for this vehicle).
+                    v_fxt_name = _vanilla_entry_name
+                elif not v_fxt_name:
+                    v_fxt_name = v.get("name", m.upper())
+                v_inherits_vanilla_key = True
+            elif not v_fxt_name:
+                _vanilla_entry_name = self._vanilla_gxt_names().get(v_fxt_key, "")
+                if _vanilla_entry_name:
                     v_fxt_name = _vanilla_entry_name
                     v_inherits_vanilla_key = True
                 else:
@@ -827,7 +865,7 @@ class ModInstaller:
 
             # Config flags (handling falls back to the shared physics ID from
             # vehicles.ide, e.g. zr250/zr250b both ride on ZR250)
-            v["has_handling"] = (m in _handling_ids) or (_ide_handling.get(m, "") in _handling_ids)
+            v["has_handling"] = (m in _handling_ids) or (_ide_handling.get(m, "").lower() in _handling_ids)
             v["has_carcols"] = (m in _carcols_models) or (len(target_vehicles) == 1 and bool(_carcols_models))
             v["has_carmods"] = m in _carmods_models
             v["carmods_parts"] = list(_carmods_parts_by_model.get(m, []))
@@ -893,6 +931,7 @@ class ModInstaller:
         fxt_key = ""
         has_author_fxt = bool(author_fxt_entries)
         fxt_file = ""
+        fxt_inherited = False
 
         if target_vehicles and target_vehicles[0].get("fxt_proposal"):
             tp = target_vehicles[0]["fxt_proposal"]
@@ -900,6 +939,7 @@ class ModInstaller:
             fxt_name = tp.get("name", "")
             has_author_fxt = tp.get("has_author_fxt", has_author_fxt)
             fxt_file = tp.get("fxt_file", "")
+            fxt_inherited = tp.get("inherited", False)
 
         if not fxt_name:
             if author_fxt_entries:
@@ -1146,6 +1186,8 @@ class ModInstaller:
             "target_id": target_id,
             "target_models": [v["model"] for v in target_vehicles],
             "target_vehicles": target_vehicles,
+            "declared_txd": target_vehicles[0].get("declared_txd", "") if target_vehicles else "",
+            "declared_handling": target_vehicles[0].get("declared_handling", "") if target_vehicles else "",
             "addon_name_conflicts": addon_name_conflicts,
             "friendly_vanilla_name": friendly_vanilla_name,
             "primary_dffs": primary_dffs,
@@ -1165,7 +1207,8 @@ class ModInstaller:
                 "key": (fxt_key or (target_model.upper() if target_model else ""))[:7],
                 "name": fxt_name,
                 "has_author_fxt": has_author_fxt,
-                "fxt_file": fxt_file
+                "fxt_file": fxt_file,
+                "inherited": fxt_inherited
             }
         }
 
@@ -1314,22 +1357,37 @@ class ModInstaller:
             target_model = params.get("target_model", "").strip().lower()
             if not target_model:
                 return {"success": False, "error": "Target replacement vehicle model name not specified"}
+            is_addon = (
+                params.get("category") == "Addon Cars"
+                or params.get("target_category") == "Addon Cars"
+                or params.get("addon_id") is not None
+                or bool(params.get("is_addon"))
+            )
+            gen_fxt_param = params.get("generate_fxt")
+            if gen_fxt_param is None:
+                gen_fxt_default = is_addon or bool(params.get("fxt_name"))
+            else:
+                gen_fxt_default = bool(gen_fxt_param)
+
             vehicles = [{
                 "source_model": (params.get("source_model") or "").strip().lower() or target_model,
                 "source_type": (params.get("source_type") or "").strip().lower(),
                 "target_model": target_model,
                 "target_txd": params.get("target_txd", ""),
                 "declared_txd": params.get("declared_txd", ""),
+                "target_handling": params.get("target_handling", ""),
+                "declared_handling": params.get("declared_handling", ""),
                 "copy_files": params.get("copy_files", True),
                 "merge_handling": params.get("merge_handling", True),
                 "merge_carcols": params.get("merge_carcols", True),
                 "merge_carmods": params.get("merge_carmods", True),
-                "generate_fxt": params.get("generate_fxt", True),
+                "generate_fxt": gen_fxt_default,
                 "fxt_key": params.get("fxt_key", target_model.upper()[:7]),
-                "fxt_name": params.get("fxt_name", folder_name),
+                "fxt_name": params.get("fxt_name", ""),
                 "merge_fla": params.get("merge_fla", True),
                 "tuning_id_assignments": params.get("tuning_id_assignments", {}),
-                "skip": False
+                "skip": False,
+                "is_addon": is_addon
             }]
 
         if not vehicles:
@@ -1369,9 +1427,11 @@ class ModInstaller:
         # must carry the same name.
         _pkg_index = _package_asset_index(self.parser, inspect_dir)
         for _v in vehicles:
+            _key = str(_v.get("source_model") or _v.get("target_model") or "").strip().lower()
             if not str(_v.get("declared_txd") or "").strip():
-                _key = str(_v.get("source_model") or _v.get("target_model") or "").strip().lower()
                 _v["declared_txd"] = _pkg_index["declared_txd"].get(_key, "")
+            if not str(_v.get("declared_handling") or "").strip():
+                _v["declared_handling"] = _pkg_index.get("declared_handling", {}).get(_key, "")
 
         primary_target = vehicles[0]["target_model"].lower()
         author_folder = params.get("author_folder", "").strip()
@@ -1887,12 +1947,23 @@ class ModInstaller:
                     h_copy = dict(matched_h)
                     explicit_hid = str(v.get("target_handling") or "").strip().upper()
                     current_hid = (matched_h.get("identifier") or "").strip().upper()
-                    if explicit_hid:
+                    declared_hid = str(v.get("declared_handling") or source_hid or "").strip().upper()
+
+                    is_same_slot = (s_model == t_model)
+                    is_explicit_rename = bool(
+                        explicit_hid
+                        and explicit_hid != declared_hid
+                        and explicit_hid != current_hid
+                        and not (is_same_slot and declared_hid and explicit_hid == s_model.upper())
+                    )
+
+                    if is_explicit_rename:
                         target_hid = explicit_hid
-                    elif s_model == t_model:
+                    elif is_same_slot:
                         # Addon / same-slot install: the deployed vehicles.ide
                         # keeps referencing the author's handling ID (e.g.
-                        # BLISTR for model "blister"), so never rename the line.
+                        # BLISTR for model "blister" or SOLAIRSD for secua),
+                        # so never rename the line.
                         final_handling.append(h_copy)
                         continue
                     else:
@@ -1926,7 +1997,19 @@ class ModInstaller:
                         if prefix:
                             h_copy["prefix"] = prefix
                     final_handling.append(h_copy)
-            mod_info["parsed"]["handling"] = final_handling
+
+            # Deduplicate final_handling by (prefix, identifier) so vehicles sharing
+            # the same handling ID do not create redundant duplicate lines in handling.cfg
+            deduped_handling = []
+            seen_handling = set()
+            for h in final_handling:
+                pfx = (h.get("prefix") or "").strip()
+                ident = (h.get("identifier") or "").strip().upper()
+                key = (pfx, ident)
+                if key not in seen_handling:
+                    seen_handling.add(key)
+                    deduped_handling.append(h)
+            mod_info["parsed"]["handling"] = deduped_handling
 
             # Re-align Carcols for all vehicles
             final_carcols = []

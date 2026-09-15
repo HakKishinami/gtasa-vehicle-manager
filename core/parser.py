@@ -43,6 +43,23 @@ RE_IDE_MISSING_COMMA = re.compile(
     r'^(\s*\d+\s*,\s*)([A-Za-z0-9_]+)[ \t]+([A-Za-z0-9_]+)(\s*,\s*)'
 )
 
+RE_NON_FXT_KEYS = {
+    "MOD", "MODS", "CAR", "CARS", "VEHICLE", "VEHICLES", "MODEL", "MODELS",
+    "AUTHOR", "AUTHORS", "CREDIT", "CREDITS", "INSTALL", "INSTALLATION",
+    "FEATURE", "FEATURES", "NOTE", "NOTES", "SPECIAL", "THANKS",
+    "VERSION", "VERSIONS", "README", "INFO", "DISCORD", "YOUTUBE",
+    "RELEASE", "DATE", "CONTACT", "LINK", "FILE", "FILES", "REPLACE",
+    "REPLACES", "UPDATE", "UPDATES", "CHANGELOG", "TEXTURE", "TEXTURES",
+    "COLOR", "COLORS", "DEFAULT", "ORIGINAL", "OPTION", "OPTIONS",
+    "SETTING", "SETTINGS", "CONFIG", "CONFIGS", "WARNING", "IMPORTANT",
+}
+
+RE_PROSE_PREFIX = re.compile(
+    r'(?i)^(?:is|are|was|were|replaces?|replaced|features?|featured|has|have|had|'
+    r'contains?|comes?|created|includes?|including|made|converted|works?|'
+    r'will|can|should|uses?|used|based|adds?|added|by|with|for|from|to|in|on|of|that|which)\b'
+)
+
 
 def normalize_ide_line(raw_line: str) -> str:
     """Insert the missing comma in the vanilla wayfarer vehicles.ide typo."""
@@ -683,12 +700,14 @@ class DualTrackParser:
 
         return is_known_vehicle or has_known_prefix or has_tuning_keyword
 
+
     def _is_fxt_line(self, line: str) -> bool:
         """
         Check if line matches FXT text entry: KEY Display Name
         e.g. 'RBER20V Schrauber 20V', 'SLASH1 Slamin Ornament', 'SLAMVAN 1953 Slamvan Custom'
         Deliberately strict so misplaced handling/audio/carmods lines (numeric
-        soup with single stray letters like 'R' or 'C04000') are never taken
+        soup with single stray letters like 'R' or 'C04000') and prose English
+        sentences (e.g. 'SULTAN replaces the vanilla car') are never taken
         for display names.
         """
         line = line.strip().lstrip('\ufeff')
@@ -700,10 +719,16 @@ class DualTrackParser:
         parts = line.split(None, 1)
         if len(parts) == 2:
             key, val = parts[0], parts[1].strip()
+            if val.endswith(':'):
+                return False
+            if key.upper() in RE_NON_FXT_KEYS:
+                return False
+            if RE_PROSE_PREFIX.match(val):
+                return False
             if re.match(r'^[A-Z0-9_]{2,8}$', key):
                 # Display name must contain a real word (2+ consecutive
                 # letters); bare numbers / single letters are config data.
-                if re.search(r'[A-Za-z]{2,}', val) and not val.lower().startswith("car4"):
+                if re.search(r'[A-Za-z\u4e00-\u9fff]{2,}', val) and not val.lower().startswith("car4"):
                     return True
         return False
 

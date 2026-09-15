@@ -3669,7 +3669,6 @@ class FxtEntryEditRegression(unittest.TestCase):
         (self.mod / "v.fxt").write_text("CHEETAH Old\n", encoding="utf-8")
         cases = [
             (("bad key!", "Ok"), "Invalid FXT key"),
-            (("CHEETAH", ""), "Display name cannot be empty"),
             (("CHEETAH", "12345"), "valid text"),
             (("CHEETAH", "Car 12 34 56 78"), "too many numbers"),
         ]
@@ -3677,6 +3676,36 @@ class FxtEntryEditRegression(unittest.TestCase):
             res = self._edit(key=key, name=name)
             self.assertFalse(res["success"], f"{key}/{name} should be rejected")
             self.assertIn(expected, res["error"])
+
+    def test_empty_name_removes_entry_and_deletes_empty_file(self):
+        p = self.mod / "v.fxt"
+        p.write_text("CHEETAH Old\n", encoding="utf-8")
+        res = self._edit(key="CHEETAH", name="")
+        self.assertTrue(res["success"], res)
+        self.assertTrue(res["deleted"])
+        self.assertTrue(res["reverted_to_vanilla"])
+        self.assertFalse(p.exists())
+
+    def test_empty_name_preserves_other_keys_in_file(self):
+        p = self.mod / "v.fxt"
+        p.write_text("CHEETAH Old\nINFERNUS Fast\n", encoding="utf-8")
+        res = self._edit(key="CHEETAH", name="")
+        self.assertTrue(res["success"], res)
+        self.assertFalse(res["deleted"])
+        self.assertTrue(res["reverted_to_vanilla"])
+        self.assertTrue(p.exists())
+        self.assertEqual(p.read_text(encoding="utf-8"), "INFERNUS Fast\n")
+
+    def test_parser_filters_out_readme_prose_sentences(self):
+        from core.parser import DualTrackParser
+        p = DualTrackParser()
+        self.assertFalse(p._is_fxt_line("SULTAN replaces the standard vehicle"))
+        self.assertFalse(p._is_fxt_line("GLENSHIT is a beat-up version of Glendale"))
+        self.assertFalse(p._is_fxt_line("INSTALL Copy files to modloader"))
+        self.assertFalse(p._is_fxt_line("CREDITS Thanks to everyone"))
+        self.assertFalse(p._is_fxt_line("MOD NAME:"))
+        self.assertTrue(p._is_fxt_line("SULTAN Sultan Custom RS"))
+        self.assertTrue(p._is_fxt_line("GLENSHI Glendale Beater"))
 
     def test_missing_directory_is_reported(self):
         res = update_fxt_entry(str(self.game / "nope"), "CHEETAH", "Name")
@@ -4702,6 +4731,135 @@ class TuningPartsScannerConsistencyRegression(unittest.TestCase):
         self.assertEqual(m["total_tuning_parts"], 3)
         self.assertEqual(m["missing_shopping_parts"], [])
         self.assertFalse(m["has_shopping_risk"])
+
+
+class DeclaredHandlingRegression(unittest.TestCase):
+    """A vehicle variant or addon model may declare another vehicle's handling ID
+    in its vehicles.ide line (column 5, e.g. "ID, secua, secua, car, SOLAIRSD, SECU, ...").
+    The installer must recognize the shared handling ID, retain SOLAIRSD in vehicles.ide,
+    avoid creating a duplicate SECUA line in handling.cfg, and deduplicate identical
+    handling lines when multiple vehicles share the same handling entry."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="declared_handling_")
+        self.addCleanup(self.temp.cleanup)
+        self.game = Path(self.temp.name) / "game"
+        (self.game / "data").mkdir(parents=True)
+        (self.game / "gta_sa.exe").write_bytes(b"x")
+        (self.game / "data" / "vehicles.ide").write_text(
+            "cars\n405, sentinel, sentinel, car, SENTINEL, SENTINL, null, executive, 10, 0, 0, -1, 0.73, 0.73, 0\nend\n",
+            encoding="utf-8")
+        (self.game / "data" / "handling.cfg").write_text("; h\n" + handling("SENTINEL") + "\n", encoding="utf-8")
+        (self.game / "data" / "carcols.dat").write_text("car\nsentinel, 51, 0\nend\n", encoding="utf-8")
+        (self.game / "data" / "carmods.dat").write_text("mods\nsentinel, nto_b_l\nend\n", encoding="utf-8")
+        self.shadow = self.game / "modloader" / "Modded Cars"
+        self.source = Path(self.temp.name) / "solair2nd"
+        self.source.mkdir()
+        (self.source / "solairsd.dff").write_bytes(b"solairsd dff")
+        (self.source / "solairsd.txd").write_bytes(b"solairsd txd")
+        (self.source / "secua.dff").write_bytes(b"secua dff")
+        (self.source / "secua.txd").write_bytes(b"secua txd")
+        (self.source / "readme.txt").write_text(
+            "vehicles.ide\n"
+            "ID, solairsd, solairsd, car, SOLAIRSD, SOLAIR, null, normal, 10, 0, 0, -1, 0.75, 0.75, 0\n"
+            "ID, secua, secua, car, SOLAIRSD, SECU, null, normal, 10, 0, 0, -1, 0.75, 0.75, 0\n\n"
+            "handling.cfg\n"
+            + handling("SOLAIRSD") + "\n",
+            encoding="utf-8")
+        self.backup = BackupManager(backup_dir=str(Path(self.temp.name) / "backups"), game_dir=str(self.game))
+        self.installer = ModInstaller(str(self.game), "Modded Cars", backup_manager=self.backup)
+
+    def installed_ide_line(self, model):
+        text = (self.shadow / "vehicles.ide").read_text(encoding="utf-8-sig")
+        return next(line for line in text.splitlines() if f", {model}," in line.lower() or f",{model}," in line.lower())
+
+    def installed_handling_lines(self, ident):
+        text = (self.shadow / "handling.cfg").read_text(encoding="utf-8-sig")
+        return [line for line in text.splitlines() if line.strip().startswith(ident.upper())]
+
+    def test_inspection_reports_the_declared_handling(self):
+        inspection = self.installer.inspect_source(str(self.source))
+        self.assertTrue(inspection["success"], inspection)
+        by_model = {v["model"]: v for v in inspection["target_vehicles"]}
+        self.assertEqual(by_model["secua"]["declared_handling"], "SOLAIRSD")
+        self.assertEqual(by_model["solairsd"]["declared_handling"], "SOLAIRSD")
+        self.assertTrue(by_model["secua"]["has_handling"])
+        self.assertTrue(by_model["solairsd"]["has_handling"])
+
+    def test_addon_preserves_shared_handling_id_without_creating_duplicate_line(self):
+        payload = {
+            "inspect_dir": str(self.source),
+            "target_category": "Addon Cars",
+            "folder_name": "Solair2nd",
+            "vehicles": [
+                {
+                    "source_model": "solairsd", "target_model": "solairsd", "category": "Addon Cars",
+                    "addon_id": 12095, "declared_handling": "SOLAIRSD", "target_handling": "SOLAIRSD",
+                    "generate_fxt": False
+                },
+                {
+                    "source_model": "secua", "target_model": "secua", "category": "Addon Cars",
+                    "addon_id": 12096, "declared_handling": "SOLAIRSD", "target_handling": "SOLAIRSD",
+                    "generate_fxt": False
+                }
+            ]
+        }
+        res = self.installer.execute_install(payload)
+        self.assertTrue(res["success"], res)
+
+        dec_solairsd = DualTrackParser().decompose_ide(self.installed_ide_line("solairsd"))
+        self.assertEqual(dec_solairsd["handling_id"], "SOLAIRSD")
+
+        dec_secua = DualTrackParser().decompose_ide(self.installed_ide_line("secua"))
+        self.assertEqual(dec_secua["handling_id"], "SOLAIRSD")
+
+        # handling.cfg should have exactly ONE line for SOLAIRSD and ZERO for SECUA
+        solairsd_lines = self.installed_handling_lines("SOLAIRSD")
+        self.assertEqual(len(solairsd_lines), 1, f"Expected 1 SOLAIRSD line, got {solairsd_lines}")
+        secua_lines = self.installed_handling_lines("SECUA")
+        self.assertEqual(len(secua_lines), 0, f"Expected 0 SECUA lines, got {secua_lines}")
+
+    def test_single_variant_preserves_declared_handling(self):
+        payload = {
+            "inspect_dir": str(self.source),
+            "target_category": "Addon Cars",
+            "folder_name": "SecuaOnly",
+            "vehicles": [
+                {
+                    "source_model": "secua", "target_model": "secua", "category": "Addon Cars",
+                    "addon_id": 12097, "declared_handling": "SOLAIRSD", "target_handling": "SOLAIRSD",
+                    "generate_fxt": False
+                }
+            ]
+        }
+        res = self.installer.execute_install(payload)
+        self.assertTrue(res["success"], res)
+
+        dec = DualTrackParser().decompose_ide(self.installed_ide_line("secua"))
+        self.assertEqual(dec["handling_id"], "SOLAIRSD")
+        solairsd_lines = self.installed_handling_lines("SOLAIRSD")
+        self.assertEqual(len(solairsd_lines), 1)
+        self.assertEqual(len(self.installed_handling_lines("SECUA")), 0)
+
+    def test_explicit_user_override_creates_distinct_handling_line(self):
+        payload = {
+            "inspect_dir": str(self.source),
+            "target_category": "Addon Cars",
+            "folder_name": "SecuaCustom",
+            "vehicles": [
+                {
+                    "source_model": "secua", "target_model": "secua", "category": "Addon Cars",
+                    "addon_id": 12098, "declared_handling": "SOLAIRSD", "target_handling": "SECUACUST",
+                    "generate_fxt": False
+                }
+            ]
+        }
+        res = self.installer.execute_install(payload)
+        self.assertTrue(res["success"], res)
+
+        dec = DualTrackParser().decompose_ide(self.installed_ide_line("secua"))
+        self.assertEqual(dec["handling_id"], "SECUACUST")
+        self.assertEqual(len(self.installed_handling_lines("SECUACUST")), 1)
 
 
 if __name__ == "__main__":

@@ -166,3 +166,11 @@ test('both FXT fields re-evaluate the hint while typing', () => {
   assert.match(source, /fxtKeyInput\.addEventListener\("input", refreshFxtInheritHint\)/);
   assert.match(source, /fxtNameInput\.addEventListener\("input", refreshFxtInheritHint\)/);
 });
+
+test('inspector allows empty display name for replacement vehicle and rejects for addon', () => {
+  const source = fs.readFileSync(path.join(web, 'app.js'), 'utf8');
+  assert.match(source, /isAddonModel\(model\)/);
+  assert.match(source, /toast\.fxtRevertedToVanilla/);
+  assert.match(source, /inspect\.fxtEditEmptyAddon/);
+});
+

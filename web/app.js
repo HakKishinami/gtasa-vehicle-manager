@@ -2579,12 +2579,20 @@ function setupFxtNameEditor() {
     const opening = (box.style.display === "none" || !box.style.display);
     box.style.display = opening ? "block" : "none";
     btnToggle.classList.toggle("active", opening);
+    const detail = currentInspectorDetail;
+    const model = ((activeMod && activeMod.target_model) || (detail && detail.target_model) || "").toLowerCase();
     if (opening) {
       input.value = activeFxtName || "";
+      input.placeholder = isAddonModel(model)
+        ? window.t("inspect.fxtNameRequired", "Enter vehicle name...")
+        : window.t("inspect.fxtPlaceholderVanilla", "Leave empty to use vanilla in-game name");
       input.focus();
     }
     if (hint) {
-      const k = activeFxtKey || ((activeMod && activeMod.target_model) || "").toUpperCase();
+      const ideCfg = detail && detail.config && detail.config.ide;
+      const ideGame = (ideCfg && ideCfg.decomposed && ideCfg.decomposed.game_name)
+        ? String(ideCfg.decomposed.game_name).toUpperCase() : "";
+      const k = activeFxtKey || ideGame || ((activeMod && activeMod.target_model) || "").toUpperCase();
       hint.textContent = k
         ? `${window.t("inspect.fxtEditKeyHint", "GXT key: ")} ${k}`
         : window.t("inspect.fxtEditNoKey", "No FXT entry for this vehicle yet; saving will create one.");
@@ -2595,7 +2603,10 @@ function setupFxtNameEditor() {
     const detail = currentInspectorDetail;
     const modDir = (detail && (detail.mod_dir || detail.mod_dir_full)) || (currentInspectorSummary && currentInspectorSummary.full_path) || "";
     const model = ((activeMod && activeMod.target_model) || (detail && detail.target_model) || "").toLowerCase();
-    const key = (activeFxtKey || model.toUpperCase() || "").toUpperCase();
+    const ideCfg = detail && detail.config && detail.config.ide;
+    const ideGame = (ideCfg && ideCfg.decomposed && ideCfg.decomposed.game_name)
+      ? String(ideCfg.decomposed.game_name).toUpperCase() : "";
+    const key = (activeFxtKey || ideGame || model.toUpperCase() || "").toUpperCase();
     const name = (input.value || "").trim();
     if (!modDir) {
       showToast(window.t("toast.selectModFirst", "Please select a vehicle from the list first"), "error");
@@ -2606,8 +2617,11 @@ function setupFxtNameEditor() {
       return;
     }
     if (!name) {
-      showToast(window.t("inspect.fxtEditEmpty", "Name cannot be empty."), "error");
-      return;
+      if (isAddonModel(model)) {
+        showToast(window.t("inspect.fxtEditEmptyAddon", "Addon vehicles require a display name."), "error");
+        return;
+      }
+      // For vanilla replacement: allow empty name to revert to vanilla GXT!
     }
     btnSave.disabled = true;
     try {
@@ -2618,20 +2632,35 @@ function setupFxtNameEditor() {
       });
       const data = await res.json();
       if (data.success) {
-        showToast(window.t("toast.saveFxtSuccess", "Vehicle display name saved!"), "success");
+        if (!name) {
+          showToast(window.t("toast.fxtRevertedToVanilla", "FXT override removed; reverted to vanilla in-game name."), "success");
+        } else {
+          showToast(window.t("toast.saveFxtSuccess", "Vehicle display name saved!"), "success");
+        }
         // Patch local state so the preview updates without refetch
         if (detail && detail.parsed) {
           detail.parsed.fxt = detail.parsed.fxt || [];
-          const hit = detail.parsed.fxt.find(f => f && f.key && f.key.toUpperCase() === key);
-          if (hit) { hit.name = name; hit.raw = `${key} ${name}`; }
-          else detail.parsed.fxt.push({ key, name, raw: `${key} ${name}` });
+          if (!name) {
+            detail.parsed.fxt = detail.parsed.fxt.filter(f => f && f.key && f.key.toUpperCase() !== key);
+          } else {
+            const hit = detail.parsed.fxt.find(f => f && f.key && f.key.toUpperCase() === key);
+            if (hit) { hit.name = name; hit.raw = `${key} ${name}`; }
+            else detail.parsed.fxt.push({ key, name, raw: `${key} ${name}` });
+          }
         }
         if (detail && detail.target_vehicles) {
           const tv = detail.target_vehicles.find(t => t && t.model && t.model.toLowerCase() === model);
-          if (tv) tv.name = name;
+          if (tv) {
+            if (!name) {
+              const vMatch = vanillaVehicles.find(v => v.model.toLowerCase() === model);
+              tv.name = vMatch ? vMatch.name : model.toUpperCase();
+            } else {
+              tv.name = name;
+            }
+          }
         }
-        activeFxtKey = key;
-        activeFxtName = name;
+        activeFxtKey = (!name ? "" : key);
+        activeFxtName = (!name ? "" : name);
         box.style.display = "none";
         btnToggle.classList.remove("active");
         renderInspectorVehicleView(model);
@@ -5464,7 +5493,8 @@ function setupInstaller() {
             if ((wv.install_mode || "replace") !== "addon") continue;
             const nm = String(wv.target_model || "").toLowerCase();
             const wt = String(wv.target_txd || nm).toLowerCase();
-            const wh = String(wv.target_handling || suggestHandlingId(nm)).trim();
+            const declH = String(wv.declared_handling || "").trim().toUpperCase();
+            const wh = String(wv.target_handling || declH || suggestHandlingId(nm)).trim();
             const wk = String(wv.fxt_key || "").trim().toUpperCase();
             if (seenAddonNames.has(nm)
                 || validateCustomModelName(nm, collectTakenModelNames(nm))
@@ -5722,6 +5752,22 @@ function refreshFxtInheritHint() {
     hint.textContent = window.t("install.fxtInheritHint",
       "Package reuses the game's own GXT entry ({0}); no name override will be written.")
       .replace("{0}", proposal.key || "");
+  }
+}
+
+function refreshHandlingSharedHint() {
+  const hint = document.getElementById("installHandlingSharedHint");
+  const inp = document.getElementById("installNewHandlingId");
+  if (!hint || !inp) return;
+  const val = inp.value.trim().toUpperCase();
+  const tm = effectiveInstallTarget().toUpperCase();
+  const isAddon = currentInstallMode() === "addon";
+  const show = Boolean(isAddon && val && tm && val !== tm);
+  hint.style.display = show ? "block" : "none";
+  if (show) {
+    hint.textContent = window.t("install.handlingSharedHint",
+      "Shared handling ID: {0} (shares physics with {0}; no separate handling line will be created).")
+      .replace(/\{0\}/g, val);
   }
 }
 
@@ -6137,17 +6183,22 @@ function setInstallMode(mode, opts = {}) {
     if (txdInput) txdInput.value = newTxd;
 
     // Internal handling identifier (handling.cfg first column + IDE Handling
-    // column). Defaults to the model name; follows the model until edited.
+    // column). Defaults to declared handling ID or model name; follows model until edited.
     const hInp = document.getElementById("installNewHandlingId");
     if (hInp) {
+      const declH = (wizard && wv && wv.declared_handling) ? wv.declared_handling : "";
       const curH = (wizard && wv ? wv.target_handling : hInp.value) || "";
-      if (hInp.dataset.auto !== "0" || !String(curH).trim()) {
+      if (declH) {
+        hInp.value = declH;
+        hInp.dataset.auto = "0";
+      } else if (hInp.dataset.auto !== "0" || !String(curH).trim()) {
         hInp.value = suggestHandlingId(newName);
         hInp.dataset.auto = "1";
       } else {
         hInp.value = String(curH).trim().toUpperCase();
       }
       if (wizard && wv) wv.target_handling = hInp.value;
+      refreshHandlingSharedHint();
     }
 
     const fxtKey = document.getElementById("installFxtKey");
@@ -6324,7 +6375,9 @@ function setupInstallModeControls() {
       nameInput.dataset.lastAuto = val;
       const hAuto = document.getElementById("installNewHandlingId");
       if (hAuto && hAuto.dataset.auto !== "0") {
-        hAuto.value = suggestHandlingId(val);
+        const curDeclaredH = (wizardVehicles && wizardVehicles.length > 1 && wizardVehicles[wizardCurrentIndex])
+          ? wizardVehicles[wizardCurrentIndex].declared_handling : "";
+        hAuto.value = curDeclaredH || suggestHandlingId(val);
       }
       if (wizardVehicles && wizardVehicles.length > 1 && wizardVehicles[wizardCurrentIndex]) {
         wizardVehicles[wizardCurrentIndex].target_model = val;
@@ -6350,6 +6403,7 @@ function setupInstallModeControls() {
       }
       syncDefaultCategoryToTarget(val);
       refreshAddonIdRow();
+      refreshHandlingSharedHint();
       validateNewInstallName();
     });
   }
@@ -6377,6 +6431,7 @@ function setupInstallModeControls() {
       if (wizardVehicles && wizardVehicles.length > 1 && wizardVehicles[wizardCurrentIndex]) {
         wizardVehicles[wizardCurrentIndex].target_handling = val;
       }
+      refreshHandlingSharedHint();
       validateNewInstallName();
     });
   }
@@ -6756,10 +6811,15 @@ function loadWizardVehicleToForm(targetIdx, skipSync = false) {
   if (wizardModeName) wizardModeName.value = isAddonModel(v.target_model) ? v.target_model : "";
   if (wizardModeTxd) wizardModeTxd.value = v.target_txd || (isAddonModel(v.target_model) ? v.target_model : "");
   if (wizardModeHandling) {
-    const derivedH = isAddonModel(v.target_model) ? suggestHandlingId(v.target_model) : "";
+    const derivedH = isAddonModel(v.target_model)
+      ? (v.declared_handling || suggestHandlingId(v.target_model))
+      : "";
     wizardModeHandling.value = v.target_handling || derivedH;
-    wizardModeHandling.dataset.auto = (!v.target_handling || v.target_handling === derivedH) ? "1" : "0";
+    wizardModeHandling.dataset.auto = (!v.target_handling || v.target_handling === derivedH)
+      ? (v.declared_handling ? "0" : "1")
+      : "0";
   }
+  refreshHandlingSharedHint();
   setInstallMode(v.install_mode || (isAddonModel(v.source_model) ? "addon" : "replace"), { keepName: true });
 
   // Update badge & rename hint
@@ -7367,6 +7427,7 @@ function renderInstallStep2(data) {
       // An addon keeps the TXD the author declared in vehicles.ide; only when
       // the package declares none does the name default to the model itself.
       const declaredTxd = String(tv.declared_txd || "").toLowerCase();
+      const declaredHandling = String(tv.declared_handling || "").toUpperCase();
       const fxtProposal = tv.fxt_proposal || {};
       const fxtInherited = Boolean(fxtProposal.inherited);
       return {
@@ -7399,7 +7460,8 @@ function renderInstallStep2(data) {
         install_mode: isAddonCar ? "addon" : "replace",
         declared_txd: declaredTxd,
         target_txd: isAddonCar ? (declaredTxd || model) : "",
-        target_handling: "",
+        declared_handling: declaredHandling,
+        target_handling: isAddonCar ? (declaredHandling || suggestHandlingId(model)) : "",
         is_configured: false
       };
     });
@@ -7477,14 +7539,16 @@ function renderInstallStep2(data) {
     const modeTxdInput = document.getElementById("installNewTxdName");
     const modeHandlingInput = document.getElementById("installNewHandlingId");
     const singleTv = (data.target_vehicles || []).find(tv => ((tv.target_model || tv.model || "").toLowerCase() === defaultModel));
-    const singleDeclaredTxd = String((singleTv && singleTv.declared_txd) || "").toLowerCase();
+    const singleDeclaredTxd = String((singleTv && singleTv.declared_txd) || data.declared_txd || "").toLowerCase();
+    const singleDeclaredHandling = String((singleTv && singleTv.declared_handling) || data.declared_handling || "").toUpperCase();
     if (modeNameInput) modeNameInput.value = singleIsAddon ? defaultModel : "";
     if (modeTxdInput) modeTxdInput.value = singleIsAddon ? (singleDeclaredTxd || defaultModel) : "";
     if (modeHandlingInput) {
-      modeHandlingInput.value = singleIsAddon ? suggestHandlingId(defaultModel) : "";
-      modeHandlingInput.dataset.auto = singleIsAddon ? "1" : "0";
+      modeHandlingInput.value = singleIsAddon ? (singleDeclaredHandling || suggestHandlingId(defaultModel)) : "";
+      modeHandlingInput.dataset.auto = (singleIsAddon && !singleDeclaredHandling) ? "1" : "0";
     }
     setInstallMode(singleInstallMode, { keepName: true });
+    refreshHandlingSharedHint();
   }
   refreshAddonIdSummary();
 }
