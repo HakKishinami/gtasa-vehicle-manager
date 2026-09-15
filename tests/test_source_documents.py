@@ -145,20 +145,25 @@ class InstallSourceArchiveTests(unittest.TestCase):
         self.assertEqual(records[0]["status"], "processed")
         self.assertFalse((self.dest / LEGACY_MANIFEST_NAME).exists())
 
-    def test_failed_merge_keeps_original_txt(self):
+    def test_failed_merge_rolls_back_deployed_txt(self):
         f = self.fixture
+        source_bytes = (f.source / "readme.txt").read_bytes()
         with patch.object(f.installer.merger, "apply_merge", return_value={"success": False, "errors": ["locked"]}):
             result = f.installer.execute_install(f.payload())
         self.assertFalse(result["success"])
-        self.assertTrue((self.dest / "readme.txt").exists())
+        self.assertTrue(result.get("rolled_back"), result)
+        self.assertFalse((self.dest / "readme.txt").exists())
         self.assertFalse((self.dest / "readme.txt.used_source").exists())
+        self.assertEqual((f.source / "readme.txt").read_bytes(), source_bytes)
 
     def test_failed_final_ide_write_does_not_archive(self):
         f = self.fixture
         with patch.object(f.installer.merger, "save_vehicle_config", return_value={"success": False, "error": "locked"}):
             result = f.installer.execute_install(f.payload(fxt_key="ALPHA"))
         self.assertFalse(result["success"])
-        self.assertTrue((self.dest / "readme.txt").exists())
+        self.assertTrue(result.get("rolled_back"), result)
+        self.assertFalse((self.dest / "readme.txt").exists())
+        self.assertTrue((f.source / "readme.txt").exists())
 
     def test_unrelated_existing_txt_and_excluded_sources_are_untouched(self):
         f = self.fixture

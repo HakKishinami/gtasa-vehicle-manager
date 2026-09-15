@@ -242,6 +242,65 @@ class InstallRegression(Fixture):
         self.assertFalse(result["success"])
         self.assertTrue(result["errors"])
 
+    def test_failed_install_restores_overwrites_and_removes_new_assets(self):
+        existing = self.shadow / "handling.cfg"
+        existing.write_bytes(b"original handling bytes\r\n")
+
+        def fail_after_config_write(_mod_info):
+            self.backup_manager.backup_file(str(existing))
+            existing.write_bytes(b"partially installed handling\n")
+            return {"success": False, "errors": ["simulated merge failure"], "applied_files": []}
+
+        with patch.object(self.installer.merger, "apply_merge", side_effect=fail_after_config_write):
+            result = self.installer.execute_install(self.payload())
+
+        self.assertFalse(result["success"], result)
+        self.assertTrue(result.get("rolled_back"), result)
+        self.assertEqual(existing.read_bytes(), b"original handling bytes\r\n")
+        self.assertFalse((self.game / "modloader" / "Addon Cars" / "Pack").exists())
+        self.assertFalse((self.shadow / "Pack").exists())
+
+    def test_addon_id_scan_failure_aborts_and_rolls_back_assets(self):
+        with patch.object(self.installer.id_mgr, "check_id_status", side_effect=OSError("scan unavailable")):
+            result = self.installer.execute_install(self.payload())
+
+        self.assertFalse(result["success"], result)
+        self.assertIn("Unable to verify addon vehicle ID", result["error"])
+        self.assertTrue(result.get("rolled_back"), result)
+        self.assertFalse((self.game / "modloader" / "Addon Cars" / "Pack").exists())
+        self.assertFalse((self.shadow / "Pack").exists())
+
+    def test_temp_cleanup_requires_matching_owned_inspection_session(self):
+        arbitrary = Path(self.temp.name) / "must_survive"
+        arbitrary.mkdir()
+        (arbitrary / "keep.txt").write_text("keep", encoding="utf-8")
+        self.installer._cleanup_temp_inspection(
+            {"is_temp_extracted": True, "inspection_id": "forged"}, str(arbitrary)
+        )
+        self.assertTrue(arbitrary.is_dir())
+
+        owned = Path(self.installer.staging_base) / "owned-test-session"
+        owned.mkdir(parents=True)
+        (owned / "temporary.txt").write_text("temporary", encoding="utf-8")
+        token = "owned-token"
+        self.installer._preview_sessions[token] = (str(owned.resolve()), {}, [], True)
+        self.installer._cleanup_temp_inspection(
+            {"is_temp_extracted": True, "inspection_id": token}, str(owned)
+        )
+        self.assertFalse(owned.exists())
+        self.assertNotIn(token, self.installer._preview_sessions)
+
+    def test_install_destination_cannot_escape_modloader(self):
+        payload = self.payload()
+        payload["vehicles"][0]["author"] = ".."
+        payload["vehicles"][0]["folder_name"] = ".."
+
+        result = self.installer.execute_install(payload)
+
+        self.assertFalse(result["success"], result)
+        self.assertIn("cannot be '.' or '..'", result["error"])
+        self.assertFalse((self.game / "modloader" / "Addon Cars" / "Pack").exists())
+
     def test_uninstall_batch_creates_one_audio_backup(self):
         self.assertTrue(self.installer.execute_install(self.payload())["success"])
         before = len(self.backups())
@@ -798,6 +857,34 @@ class DataComplianceAndCleanerRegression(unittest.TestCase):
         self.assertIn("infernus", (shadow_dir / "carcols.dat").read_text())
         self.assertIn("infernus", (shadow_dir / "carmods.dat").read_text())
 
+    def test_delete_mod_rejects_similarly_prefixed_sibling_directory(self):
+        outside = self.game / "modloader_backup" / "MustSurvive"
+        outside.mkdir(parents=True)
+        (outside / "keep.dff").write_bytes(b"keep")
+
+        result = self.cleaner.delete_mod(str(outside), revert_config=False)
+
+        self.assertFalse(result["success"], result)
+        self.assertIn("Safety guard", result["error"])
+        self.assertTrue((outside / "keep.dff").exists())
+
+    def test_delete_mod_reports_incomplete_directory_removal(self):
+        mod_folder = self.game / "modloader" / "Modded Cars" / "LockedMod"
+        mod_folder.mkdir(parents=True)
+        (mod_folder / "locked.dff").write_bytes(b"locked")
+        shadow_handling = self.game / "modloader" / "Modded Cars" / "handling.cfg"
+        original_handling = b"LOCKED 1800.0 custom handling\r\n"
+        shadow_handling.write_bytes(original_handling)
+
+        with patch("core.cleaner._safe_rmtree", return_value=None):
+            result = self.cleaner.delete_mod(str(mod_folder), target_model="locked", revert_config=True)
+
+        self.assertFalse(result["success"], result)
+        self.assertIn("Failed to delete folder completely", result["error"])
+        self.assertTrue(result["config_rolled_back"], result)
+        self.assertTrue(mod_folder.exists())
+        self.assertEqual(shadow_handling.read_bytes(), original_handling)
+
     def test_clean_orphaned_vehicle_entries_purges_only_orphans(self):
         shadow_dir = self.game / "modloader" / "Modded Cars"
         (shadow_dir / "vehicles.ide").write_text(
@@ -830,6 +917,28 @@ class DataComplianceAndCleanerRegression(unittest.TestCase):
         carcols_text = (shadow_dir / "carcols.dat").read_text()
         self.assertNotIn("orphan1", carcols_text)
         self.assertTrue(carcols_text.strip().endswith("end"))
+
+    def test_orphan_cleanup_preserves_handling_referenced_by_active_ide(self):
+        shadow_dir = self.game / "modloader" / "Modded Cars"
+        active_mod = shadow_dir / "Secua"
+        active_mod.mkdir()
+        (active_mod / "secua.dff").write_bytes(b"dff")
+        (shadow_dir / "vehicles.ide").write_text(
+            "cars\n"
+            "12000, secua, secua, car, SOLAIRSD, SECU, null, normal, 10, 0, 0, -1, 0.75, 0.75, 0\n"
+            "end\n",
+            encoding="utf-8"
+        )
+        (shadow_dir / "handling.cfg").write_text(
+            "SOLAIRSD 1500.0 4000.0 2.0 0.0 0.0 0.0 70 0.8\n",
+            encoding="utf-8"
+        )
+
+        result = self.cleaner.clean_orphaned_vehicle_entries()
+
+        self.assertTrue(result["success"], result)
+        self.assertNotIn("solairsd", result["purged"]["handling_cfg"])
+        self.assertIn("SOLAIRSD", (shadow_dir / "handling.cfg").read_text(encoding="utf-8"))
 
     def test_vanilla_handling_baseline_retrieval(self):
         # 1. When no shadow handling exists, active handling falls back to vanilla, and vanilla_handling baseline is also present
@@ -2590,6 +2699,61 @@ class ShoppingRegression(unittest.TestCase):
         content_after = (self.shadow / "shopping.dat").read_text(encoding="utf-8")
         self.assertNotIn("exh_a_zr", content_after)
         self.assertNotIn("item exh_a_zr", content_after)
+
+    def test_delete_tuning_part_preserves_shared_global_records(self):
+        (self.shadow / "carmods.dat").write_text(
+            "mods\nzr350, exh_shared, exh_zr\nsultan, exh_shared, exh_sultan\nend\n"
+            "link\nexh_shared, exh_shared_r\nend\n",
+            encoding="utf-8"
+        )
+        (self.shadow / "veh_mods.ide").write_text(
+            "objs\n11747, exh_shared, vehicle, 100, 2097152\nend\n",
+            encoding="utf-8"
+        )
+        (self.shadow / "shopping.dat").write_text(
+            "section CarMods\nexh_shared SHARED respect 0 sexy 0 850\nend\n"
+            "section carmod3\nitem exh_shared\nend\n",
+            encoding="utf-8"
+        )
+
+        result = self.merger.delete_tuning_part("zr350", "exh_shared")
+
+        self.assertTrue(result["success"], result)
+        self.assertTrue(result["shared_part_preserved"])
+        carmods = (self.shadow / "carmods.dat").read_text(encoding="utf-8")
+        self.assertNotIn("zr350, exh_shared", carmods)
+        self.assertIn("sultan, exh_shared", carmods)
+        self.assertIn("exh_shared, exh_shared_r", carmods)
+        self.assertIn("exh_shared", (self.shadow / "veh_mods.ide").read_text(encoding="utf-8"))
+        shopping = (self.shadow / "shopping.dat").read_text(encoding="utf-8")
+        self.assertIn("exh_shared SHARED", shopping)
+        self.assertIn("item exh_shared", shopping)
+
+    def test_delete_tuning_part_rolls_back_all_files_on_write_failure(self):
+        paths = {
+            "carmods.dat": "mods\nzr350, exh_a_zr, exh_c_zr\nend\nlink\nexh_a_zr, exh_b_zr\nend\n",
+            "veh_mods.ide": "objs\n11747, exh_a_zr, zr350, 100, 2097152\nend\n",
+            "shopping.dat": "section CarMods\nexh_a_zr ZR2AE respect 0 sexy 0 850\nend\n",
+        }
+        for name, content in paths.items():
+            (self.shadow / name).write_text(content, encoding="utf-8")
+        originals = {name: (self.shadow / name).read_bytes() for name in paths}
+        writes = 0
+
+        def fail_second_write(path, content):
+            nonlocal writes
+            writes += 1
+            if writes == 2:
+                raise OSError("simulated locked file")
+            return write_text_atomic(path, content)
+
+        with patch("core.merger.write_text_atomic", side_effect=fail_second_write):
+            result = self.merger.delete_tuning_part("zr350", "exh_a_zr")
+
+        self.assertFalse(result["success"], result)
+        self.assertTrue(result.get("rolled_back"), result)
+        for name, original in originals.items():
+            self.assertEqual((self.shadow / name).read_bytes(), original, name)
 
     def test_infer_workshop_section(self):
         tuning_mgr = self.merger.tuning_mgr

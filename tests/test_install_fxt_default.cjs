@@ -174,3 +174,48 @@ test('inspector allows empty display name for replacement vehicle and rejects fo
   assert.match(source, /inspect\.fxtEditEmptyAddon/);
 });
 
+test('inspector FXT editor uses the current vehicle IDE game name', () => {
+  const e = setup();
+  const source = fs.readFileSync(path.join(web, 'app.js'), 'utf8');
+  assert.match(source, /function inspectorFxtKeyForModel/);
+  assert.doesNotMatch(source, /detail\.config && detail\.config\.ide/);
+
+  const detail = {
+    target_model: 'glenshit',
+    all_active_configs: {
+      glenshit: { vehicles_ide: { decomposed: { game_name: 'GLENSHI' } } },
+      buffalo: { vehicles_ide: { decomposed: { game_name: 'BUFFALO' } } },
+    },
+    parsed: {
+      fxt: [],
+      ide: [
+        { model_name: 'glenshit', game_name: 'GLENSHI' },
+        { model_name: 'buffalo', game_name: 'BUFFALO' },
+      ],
+    },
+  };
+  e.run(`currentInspectorDetail = ${JSON.stringify(detail)}; activeFxtKey = ""; activeFxtName = "";`);
+  assert.equal(e.run('inspectorFxtKeyForModel(currentInspectorDetail, "glenshit")'), 'GLENSHI');
+  assert.equal(e.run('inspectorFxtKeyForModel(currentInspectorDetail, "buffalo")'), 'BUFFALO');
+  assert.equal(e.run('inspectorFxtKeyForModel(currentInspectorDetail, "unknownx")'), 'UNKNOWN');
+});
+
+test('open FXT editor refreshes the GXT key when switching vehicles in a pack', () => {
+  const e = setup();
+  const detail = {
+    target_model: 'glenshit',
+    target_models: ['glenshit', 'buffalo'],
+    all_active_configs: {
+      glenshit: { vehicles_ide: { decomposed: { game_name: 'GLENSHI' } } },
+      buffalo: { vehicles_ide: { decomposed: { game_name: 'BUFFALO' } } },
+    },
+    parsed: { fxt: [], ide: [] },
+  };
+  e.run(`currentInspectorDetail = ${JSON.stringify(detail)}; activeFxtKey = ""; activeFxtName = "";`);
+  e.node('fxtEditContainer').style.display = 'block';
+  e.run('refreshOpenFxtNameEditor(currentInspectorDetail, "glenshit")');
+  assert.match(e.node('fxtEditKeyHint').textContent, /GLENSHI/);
+  e.run('refreshOpenFxtNameEditor(currentInspectorDetail, "buffalo")');
+  assert.match(e.node('fxtEditKeyHint').textContent, /BUFFALO/);
+});
+

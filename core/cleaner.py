@@ -62,11 +62,20 @@ class ModCleaner:
         """
         Safely delete a vehicle mod folder and optionally revert its configurations.
         """
-        mod_path = os.path.normpath(mod_path)
-        modloader_base = os.path.normpath(os.path.join(self.game_path, "modloader"))
+        mod_path = os.path.abspath(os.path.normpath(mod_path))
+        resolved_mod_path = os.path.realpath(mod_path)
+        modloader_base = os.path.realpath(os.path.abspath(os.path.join(self.game_path, "modloader")))
 
         # 1. Security Check: Must be inside modloader/
-        if not mod_path.startswith(modloader_base) or mod_path == modloader_base:
+        try:
+            inside_modloader = (
+                os.path.normcase(os.path.commonpath([modloader_base, resolved_mod_path]))
+                == os.path.normcase(modloader_base)
+            )
+        except ValueError:
+            inside_modloader = False
+        if (not inside_modloader
+                or os.path.normcase(resolved_mod_path) == os.path.normcase(modloader_base)):
             return {"success": False, "error": "Safety guard: Only mod directories inside modloader/ can be deleted."}
 
         if not os.path.isdir(mod_path):
@@ -75,7 +84,8 @@ class ModCleaner:
         # 2. Revert configurations for target_model(s) if requested
         reverted_configs = []
         action_tag = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in str(target_model or os.path.basename(mod_path)))
-        with self.backup_manager.snapshot(action_name=f"uninstall_{action_tag}"):
+        uninstall_snapshot = None
+        with self.backup_manager.snapshot(action_name=f"uninstall_{action_tag}") as uninstall_snapshot:
             if revert_config:
                 models_to_revert = []
                 if target_model:
@@ -155,12 +165,37 @@ class ModCleaner:
                     if self.fla_mgr.remove_audio_settings(models_to_revert):
                         reverted_configs.append("gtasa_vehicleAudioSettings.cfg")
 
+        def _delete_failure(message: str) -> Dict[str, Any]:
+            """Restore configuration edits when the asset folder could not be removed."""
+            rollback_errors = []
+            config_rolled_back = True
+            if uninstall_snapshot and os.path.isdir(uninstall_snapshot):
+                try:
+                    restored = self.backup_manager.restore_snapshot(os.path.basename(uninstall_snapshot))
+                except Exception as exc:
+                    restored = {"success": False, "errors": [str(exc)]}
+                config_rolled_back = bool(restored.get("success"))
+                if not config_rolled_back:
+                    rollback_errors = restored.get("errors") or [restored.get("error") or "Unknown error"]
+            if rollback_errors:
+                message += "; configuration rollback failed: " + "; ".join(rollback_errors)
+            return {
+                "success": False,
+                "error": message,
+                "config_rolled_back": config_rolled_back,
+                "errors": rollback_errors,
+            }
+
         # 3. Delete Mod Directory
         parent_dir = os.path.dirname(mod_path)
         try:
             _safe_rmtree(mod_path)
         except Exception as e:
-            return {"success": False, "error": f"Failed to delete folder: {e}"}
+            return _delete_failure(f"Failed to delete folder: {e}")
+        if os.path.lexists(mod_path):
+            return _delete_failure(
+                "Failed to delete folder completely; some files may be locked or read-only."
+            )
 
         # 3b. Purge any remaining orphan configs whose .dff no longer exists in modloader
         try:
@@ -763,6 +798,7 @@ class ModCleaner:
         # 1. Clean vehicles.ide
         shadow_ide = os.path.join(self.shadow_dir, "vehicles.ide")
         vanilla_ide = os.path.join(self.vanilla_dir, "vehicles.ide")
+        new_ide_lines = []
         if os.path.exists(shadow_ide):
             vanilla_models = set(MODEL_TO_ID.keys())
             if os.path.exists(vanilla_ide):
@@ -793,6 +829,18 @@ class ModCleaner:
             if modified_ide:
                 self.backup_manager.backup_file(shadow_ide)
                 write_text_atomic(shadow_ide, new_ide_lines)
+
+        # Handling identifiers do not have to match DFF basenames.  Preserve
+        # every ID still referenced by a surviving vehicles.ide row (for
+        # example model SECUA legitimately sharing SOLAIRSD physics).
+        referenced_handling_ids = set()
+        for line in new_ide_lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            parts = [part.strip() for part in stripped.split(",")]
+            if len(parts) >= 5 and parts[4]:
+                referenced_handling_ids.add(parts[4].lower())
 
         # 2. Clean handling.cfg
         shadow_h = os.path.join(self.shadow_dir, "handling.cfg")
@@ -835,7 +883,9 @@ class ModCleaner:
                         if pfx == "^":
                             new_h_lines.append(line)
                             continue
-                        if ident and ident not in vanilla_handling_ids and ident not in active_dffs:
+                        if (ident and ident not in vanilla_handling_ids
+                                and ident not in active_dffs
+                                and ident not in referenced_handling_ids):
                             purged["handling_cfg"].append(ident)
                             modified_h = True
                             continue

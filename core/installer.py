@@ -12,7 +12,6 @@ import secrets
 import shutil
 import zipfile
 import tempfile
-import time
 from typing import Dict, Any, List, Optional, Tuple
 
 from .parser import DualTrackParser, read_text_file_safe, normalize_ide_line
@@ -376,9 +375,7 @@ class ModInstaller:
         if not os.path.isfile(archive_path):
             raise FileNotFoundError(f"Archive not found: {archive_path}")
 
-        session_id = f"mod_{int(time.time())}_{os.getpid()}"
-        out_dir = os.path.join(self.staging_base, session_id)
-        os.makedirs(out_dir, exist_ok=True)
+        out_dir = tempfile.mkdtemp(prefix="mod_", dir=self.staging_base)
 
         ext = os.path.splitext(archive_path)[1].lower()
         seven_zip = find_7zip()
@@ -1167,7 +1164,10 @@ class ModInstaller:
         for items in asset_files.values():
             items.sort(key=lambda item: item["rel"].lower())
         inspection_id = secrets.token_urlsafe(24)
-        self._preview_sessions[inspection_id] = (os.path.realpath(inspect_dir), preview_paths, readme_files + fxt_files)
+        self._preview_sessions[inspection_id] = (
+            os.path.realpath(inspect_dir), preview_paths, readme_files + fxt_files,
+            bool(extracted_temp)
+        )
         while len(self._preview_sessions) > 8:
             del self._preview_sessions[next(iter(self._preview_sessions))]
 
@@ -1335,7 +1335,109 @@ class ModInstaller:
             normalized[part] = part_id
         return {"success": True, "assignments": normalized}
 
+    def _installation_filesystem_state(self) -> Tuple[set, set]:
+        """Return files/directories an install is allowed to create.
+
+        The inventory is names only; file contents continue to live in the
+        BackupManager snapshot.  It lets a failed install remove files that did
+        not exist before the operation, which an ordinary backup cannot restore.
+        """
+        files, directories = set(), set()
+        modloader_root = os.path.abspath(os.path.join(self.game_path, "modloader"))
+        if os.path.isdir(modloader_root):
+            directories.add(modloader_root)
+            for root, dirs, names in os.walk(modloader_root, followlinks=False):
+                directories.update(os.path.abspath(os.path.join(root, d)) for d in dirs)
+                files.update(os.path.abspath(os.path.join(root, name)) for name in names)
+
+        # FLA integration is the only installer output outside ModLoader.
+        for path in (self.merger.fla_mgr.audio_path, self.merger.fla_mgr.special_path):
+            if path and os.path.isfile(path):
+                files.add(os.path.abspath(path))
+        return files, directories
+
+    def _rollback_install(
+        self,
+        snapshot_dir: Optional[str],
+        before_files: set,
+        before_dirs: set
+    ) -> List[str]:
+        """Restore overwritten/deleted files and remove this install's new files."""
+        errors: List[str] = []
+        if snapshot_dir and os.path.isdir(snapshot_dir):
+            try:
+                restored = self.backup_manager.restore_snapshot(os.path.basename(snapshot_dir))
+            except Exception as exc:
+                restored = {"success": False, "errors": [str(exc)]}
+            if not restored.get("success"):
+                problems = restored.get("errors") or [restored.get("error") or "Unknown error"]
+                errors.extend(f"Rollback restore failed: {problem}" for problem in problems)
+
+        after_files, after_dirs = self._installation_filesystem_state()
+        for path in sorted(after_files - before_files, key=len, reverse=True):
+            try:
+                if os.path.lexists(path):
+                    os.remove(path)
+            except OSError as exc:
+                errors.append(f"Failed to remove new install file {path}: {exc}")
+        for path in sorted(after_dirs - before_dirs, key=len, reverse=True):
+            try:
+                if os.path.isdir(path):
+                    os.rmdir(path)
+            except OSError:
+                # A directory can legitimately remain non-empty when it also
+                # contains material that predates this install.
+                pass
+        try:
+            self.id_mgr.invalidate_shared_cache(self.game_path)
+        except Exception as exc:
+            errors.append(f"Failed to refresh the ID cache after rollback: {exc}")
+        return errors
+
+    def _cleanup_temp_inspection(self, params: Dict[str, Any], inspect_dir: str):
+        """Delete only an extracted staging directory owned by this inspection."""
+        if not params.get("is_temp_extracted", False):
+            return
+        inspection_id = str(params.get("inspection_id") or "")
+        session = self._preview_sessions.get(inspection_id)
+        if not session or len(session) < 4 or not session[3]:
+            return
+        expected = os.path.realpath(session[0])
+        requested = os.path.realpath(inspect_dir)
+        staging_root = os.path.realpath(self.staging_base)
+        try:
+            inside_staging = os.path.commonpath([staging_root, expected]) == staging_root
+        except ValueError:
+            inside_staging = False
+        if expected != requested or expected == staging_root or not inside_staging:
+            return
+        self._preview_sessions.pop(inspection_id, None)
+        shutil.rmtree(expected, ignore_errors=True)
+
     def execute_install(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute one installation as a single rollback-capable transaction."""
+        before_files, before_dirs = self._installation_filesystem_state()
+        snapshot_dir = self.backup_manager.start_snapshot(
+            action_name="install_vehicle",
+            description="Install vehicle assets, FXT and shared configuration"
+        )
+        try:
+            result = self._execute_install_impl(params)
+        except Exception as exc:
+            result = {"success": False, "error": f"Installation failed: {exc}", "errors": [str(exc)]}
+        finally:
+            snapshot_dir = self.backup_manager.finish_snapshot() or snapshot_dir
+
+        if not result.get("success"):
+            rollback_errors = self._rollback_install(snapshot_dir, before_files, before_dirs)
+            result["rolled_back"] = not rollback_errors
+            if rollback_errors:
+                result.setdefault("errors", []).extend(rollback_errors)
+                detail = "; ".join(rollback_errors)
+                result["error"] = (result.get("error", "") + "; " + detail).strip("; ")
+        return result
+
+    def _execute_install_impl(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
         Deploy vehicle files into ModLoader and inject configs into shadow copies.
         """
@@ -1344,6 +1446,7 @@ class ModInstaller:
             return {"success": False, "error": "Invalid source directory for installation"}
 
         target_category = params.get("target_category", self.data_folder).strip()
+        target_category = re.sub(r'[<>:"/\\|?*]', '_', target_category).strip()
         folder_name = params.get("folder_name", "").strip()
         folder_name = re.sub(r'[<>:"/\\|?*]', '_', folder_name)
         if not folder_name:
@@ -1451,10 +1554,23 @@ class ModInstaller:
             _sub = _clean_folder(_v.get("folder_name") or "") or shared_sub
             _cat = _clean_folder(_v.get("category") or "") or target_category
             _au = _clean_folder(_v.get("author") or "") or author_folder
+            if any(component in (".", "..") for component in (_cat, _au, _sub) if component):
+                return {"success": False, "error": "Installation folders cannot be '.' or '..'"}
             if _au:
                 _d = os.path.join(self.game_path, "modloader", _cat, _au, _sub)
             else:
                 _d = os.path.join(self.game_path, "modloader", _cat, _sub)
+            _modloader_root = os.path.realpath(os.path.join(self.game_path, "modloader"))
+            _resolved_dest = os.path.realpath(_d)
+            try:
+                _inside_modloader = (
+                    os.path.normcase(os.path.commonpath([_modloader_root, _resolved_dest]))
+                    == os.path.normcase(_modloader_root)
+                )
+            except ValueError:
+                _inside_modloader = False
+            if not _inside_modloader or os.path.normcase(_resolved_dest) == os.path.normcase(_modloader_root):
+                return {"success": False, "error": "Installation destination must stay inside ModLoader"}
             os.makedirs(_d, exist_ok=True)
             veh_dest[_idx] = _d
             if _d not in dest_dirs_ordered:
@@ -1746,6 +1862,8 @@ class ModInstaller:
                 continue
             dest_file = os.path.join(_ddir, dest_name)
             try:
+                if os.path.exists(dest_file):
+                    self.backup_manager.backup_file(dest_file)
                 shutil.copy2(src_file, dest_file)
                 if dest_name.lower().endswith(".txt"):
                     copied_source_txt.append(dest_file)
@@ -2149,6 +2267,7 @@ class ModInstaller:
                     _vk = (_v.get("target_model") or "").lower()
                     if _vk and _vk not in MODEL_TO_ID and _v.get("addon_id") not in (None, ""):
                         _addon_assign.setdefault(_vk, _v.get("addon_id"))
+                _assigned_id_owners = {}
                 for _mk, _mv in list(_addon_assign.items()):
                     try:
                         _iv = int(_mv)
@@ -2158,10 +2277,18 @@ class ModInstaller:
                     if _iv < 612 or _iv > 65535:
                         return {"success": False,
                                 "error": f"ID {_iv} for new vehicle {_mk} is out of range (must be between 612 and 65535)"}
+                    if _iv in _assigned_id_owners and _assigned_id_owners[_iv] != _mk:
+                        return {"success": False,
+                                "error": f"ID {_iv} is assigned to both {_assigned_id_owners[_iv]} and {_mk}"}
+                    _assigned_id_owners[_iv] = _mk
                     try:
                         _st0 = self.id_mgr.check_id_status(_iv)
-                    except Exception:
-                        _st0 = {"is_free": True}
+                    except Exception as exc:
+                        return {"success": False,
+                                "error": f"Unable to verify addon vehicle ID {_iv} for {_mk}: {exc}"}
+                    if not isinstance(_st0, dict) or not isinstance(_st0.get("is_free"), bool):
+                        return {"success": False,
+                                "error": f"Unable to verify addon vehicle ID {_iv} for {_mk}: invalid scan result"}
                     if not _st0.get("is_free") and str(_st0.get("name", "")).lower() != _mk:
                         return {"success": False,
                                 "error": f"ID {_iv} for new vehicle {_mk} is already occupied ({_st0.get('name', '')})"}
@@ -2188,14 +2315,34 @@ class ModInstaller:
                         _got = self.id_mgr.allocate_free_addon_ids(1, exclude_ids=_used_addon_ids)
                         _nid = _got[0] if _got else None
                     if _nid is None:
-                        continue
+                        return {"success": False,
+                                "error": f"No free addon vehicle ID is available for {_tm}"}
                     try:
                         _st = self.id_mgr.check_id_status(int(_nid))
-                        if not _st.get("is_free") and str(_st.get("name", "")).lower() != _tm:
+                    except Exception as exc:
+                        return {"success": False,
+                                "error": f"Unable to verify addon vehicle ID {_nid} for {_tm}: {exc}"}
+                    if not isinstance(_st, dict) or not isinstance(_st.get("is_free"), bool):
+                        return {"success": False,
+                                "error": f"Unable to verify addon vehicle ID {_nid} for {_tm}: invalid scan result"}
+                    if not _st.get("is_free") and str(_st.get("name", "")).lower() != _tm:
+                        try:
                             _got = self.id_mgr.allocate_free_addon_ids(1, exclude_ids=_used_addon_ids)
                             _nid = _got[0] if _got else None
-                    except Exception:
-                        pass
+                        except Exception as exc:
+                            return {"success": False,
+                                    "error": f"Unable to allocate a free addon vehicle ID for {_tm}: {exc}"}
+                        if _nid is not None:
+                            try:
+                                _st = self.id_mgr.check_id_status(int(_nid))
+                            except Exception as exc:
+                                return {"success": False,
+                                        "error": f"Unable to verify addon vehicle ID {_nid} for {_tm}: {exc}"}
+                            if (not isinstance(_st, dict)
+                                    or not isinstance(_st.get("is_free"), bool)
+                                    or (not _st["is_free"] and str(_st.get("name", "")).lower() != _tm)):
+                                return {"success": False,
+                                        "error": f"Unable to confirm a free addon vehicle ID for {_tm}"}
                     if _nid is None:
                         continue
                     _used_addon_ids.add(int(_nid))
@@ -2253,7 +2400,8 @@ class ModInstaller:
                 if _conversion_ide:
                     mod_info["conversion_ide"] = _conversion_ide
             except Exception as _ide_exc:
-                variant_warnings.append(f"Failed to register new vehicle in vehicles.ide: {_ide_exc}")
+                return {"success": False,
+                        "error": f"Failed to register new vehicle in vehicles.ide: {_ide_exc}"}
 
             # Surface silently unregistered addon vehicles instead of shipping
             # assets that can never appear in game.
@@ -2391,11 +2539,7 @@ class ModInstaller:
                         copied_files[copied_files.index(old_label)] = prefix + os.path.basename(new_path)
 
         # Clean up temp staging directory if was extracted from archive
-        if params.get("is_temp_extracted", False):
-            try:
-                shutil.rmtree(inspect_dir, ignore_errors=True)
-            except Exception:
-                pass
+        self._cleanup_temp_inspection(params, inspect_dir)
 
         _modloader_root = os.path.join(self.game_path, "modloader")
         return {

@@ -608,6 +608,7 @@ window.I18N_DICTIONARY = {
     "install.addonIdSelf": "🟢 ID {0} already belongs to this vehicle",
     "install.addonIdInvalid": "⚠️ Enter an ID between 612–65535",
     "install.addonIdConflict": "Addon vehicle {0}: ID {1} unusable: {2}",
+    "install.addonIdCheckFailed": "Unable to verify addon vehicle IDs. Installation was stopped; try again after the ID scan is available.",
     "install.addonIdOverKillable": "⛔ ID {0} exceeds the FLA killable limit {1}; kills may not register or the game may crash. Lower it or raise the ini",
     "install.addonIdOverKillableConfirm": "These addon vehicle IDs exceed the FLA killable limit {0}; destroyed vehicles may not register kills or crash the game (raise Count of killable model IDs in the ini and retry):\n{1}\nInstall anyway?",
     "install.cardChecklistTitle": "Will write",

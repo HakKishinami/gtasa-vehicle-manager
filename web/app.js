@@ -20,6 +20,11 @@ function loc(map) {
   return (map && (map[window.currentLang] || map.en || map.zh)) || "";
 }
 
+function escapeHtml(value) {
+  const chars = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+  return String(value == null ? "" : value).replace(/[&<>"']/g, ch => chars[ch]);
+}
+
 // Initialize on DOM ready
 document.addEventListener("DOMContentLoaded", () => {
   setupTabs();
@@ -1639,7 +1644,7 @@ function renderModGrid(mods) {
       const titleAttr = mod.fla_special.is_native
         ? (loc({ en: `GTA:SA Native Feature (${mod.fla_special.target})` }))
         : (loc({ en: `FLA Special Feature` }));
-      alertBits.push(`<span class="badge badge-special" title="${titleAttr}">${icon} ${specialLabel}</span>`);
+      alertBits.push(`<span class="badge badge-special" title="${escapeHtml(titleAttr)}">${escapeHtml(icon)} ${escapeHtml(specialLabel)}</span>`);
     }
 
     const isAddonMod = Boolean(mod.is_addon || mod.mod_type === "addon");
@@ -1668,9 +1673,10 @@ function renderModGrid(mods) {
           ${vList.map(v => {
             const isAddonVeh = Boolean(v.is_addon !== undefined ? v.is_addon : isAddonMod);
             const vName = v.name || (v.model ? v.model.toUpperCase() : "");
-            const vIdBadge = v.id ? `<span class="sub-chip-id">${v.id}</span>` : "";
+            const vIdBadge = v.id ? `<span class="sub-chip-id">${escapeHtml(v.id)}</span>` : "";
             const chipClass = isAddonVeh ? "sub-chip-addon" : "sub-chip-replace";
-            return `<span class="vehicle-sub-chip ${chipClass}" title="${v.model || ''} (${v.dff_name || ''})">${vName} ${vIdBadge}</span>`;
+            const chipTitle = `${v.model || ""} (${v.dff_name || ""})`;
+            return `<span class="vehicle-sub-chip ${chipClass}" title="${escapeHtml(chipTitle)}">${escapeHtml(vName)} ${vIdBadge}</span>`;
           }).join("")}
           ${extraCount ? `<button type="button" class="sub-chip-more" data-extra="${extraCount}">${moreLabel}</button>` : ""}
         </div>
@@ -1680,18 +1686,22 @@ function renderModGrid(mods) {
         ? vList[0].name
         : (mod.vanilla_name || (mod.target_model ? mod.target_model.toUpperCase() : (t("common.unknown"))));
       const singleId = (vList.length === 1 && vList[0].id) ? vList[0].id : mod.addon_id;
+      const safeTargetName = escapeHtml(targetName);
       if (isAddonMod) {
         const kindLabel = window.t("mods.cardAddon", "Addon Vehicle");
-        const idPill = singleId ? `<span class="sub-chip-id">ID: ${singleId}</span>` : "";
-        const modelSub = (vList.length === 1 && vList[0].model) ? `<span class="target-model-code">${vList[0].model.toUpperCase()}</span>` : "";
-        targetRowHtml = `<div class="mod-card-target-row"><span class="target-kind-tag kind-addon">➕ ${kindLabel}</span><span class="target-name" title="${targetName}">${targetName}</span>${modelSub}${idPill}</div>`;
+        const idPill = singleId ? `<span class="sub-chip-id">ID: ${escapeHtml(singleId)}</span>` : "";
+        const modelSub = (vList.length === 1 && vList[0].model) ? `<span class="target-model-code">${escapeHtml(vList[0].model.toUpperCase())}</span>` : "";
+        targetRowHtml = `<div class="mod-card-target-row"><span class="target-kind-tag kind-addon">➕ ${kindLabel}</span><span class="target-name" title="${safeTargetName}">${safeTargetName}</span>${modelSub}${idPill}</div>`;
       } else {
         const replacesLabel = window.t("mods.cardOriginal", "Replaces");
-        targetRowHtml = `<div class="mod-card-target-row"><span class="target-kind-tag kind-replace">🔁 ${replacesLabel}</span><span class="target-name" title="${targetName}">${targetName}</span></div>`;
+        targetRowHtml = `<div class="mod-card-target-row"><span class="target-kind-tag kind-replace">🔁 ${replacesLabel}</span><span class="target-name" title="${safeTargetName}">${safeTargetName}</span></div>`;
       }
     }
 
     const authorText = `${window.t("mods.cardAuthor", "Author")}: ${author}`;
+    const safeAuthorText = escapeHtml(authorText);
+    const safeModName = escapeHtml(mod.name);
+    const safeRelPath = escapeHtml(mod.rel_path);
     const deleteTitle = loc({ en: "Delete this mod folder and revert configs" });
     const footerHtml = (metaBits.length || alertBits.length)
       ? `<div class="feature-badges">
@@ -1712,7 +1722,7 @@ function renderModGrid(mods) {
         <div class="mod-card-type ${typeMeta.cls}" title="${typeLabel}" aria-label="${typeLabel}">${typeMeta.icon}</div>
         <div class="mod-card-heading">
           <div class="mod-card-title-row">
-            <span class="mod-card-title" title="${mod.name}">${mod.name}</span>
+            <span class="mod-card-title" title="${safeModName}">${safeModName}</span>
             <div class="mod-card-actions">
               <button type="button" class="card-rename-btn" title="${renameTitle}" aria-label="${window.t("mods.cardRenameBtn", "Rename")}">${renameIcon}</button>
               <button type="button" class="card-delete-btn" title="${deleteTitle}" aria-label="${window.t("mods.cardDeleteBtn", "Delete")}">${deleteIcon}</button>
@@ -1721,8 +1731,8 @@ function renderModGrid(mods) {
           ${targetRowHtml}
         </div>
       </div>
-      <div class="mod-card-author">${authorText}</div>
-      <div class="mod-card-path" title="${mod.rel_path}">${mod.rel_path}</div>
+      <div class="mod-card-author">${safeAuthorText}</div>
+      <div class="mod-card-path" title="${safeRelPath}">${safeRelPath}</div>
       ${subVehiclesHtml}
       ${footerHtml}
     `;
@@ -2567,6 +2577,53 @@ function toggleFlaEdit(type, forceState) {
   }
 }
 
+function inspectorFxtKeyForModel(detail, model) {
+  // GXT keys are 2-7 chars. Prefer this car's vehicles.ide game-name column;
+  // falling back to the model code used to write GLENSHIT instead of GLENSHI.
+  const modelClean = String(model || "").trim().toLowerCase();
+  const fallback = modelClean.toUpperCase().replace(/[^A-Z0-9_]/g, "").slice(0, 7);
+  if (!detail || !modelClean) return fallback;
+
+  const configs = (detail.all_active_configs && detail.all_active_configs[modelClean])
+    || (((detail.target_model || "").toLowerCase() === modelClean) ? detail.active_configs : null)
+    || {};
+  let ideGame = "";
+  const ideCfg = configs.vehicles_ide;
+  if (ideCfg && ideCfg.decomposed && ideCfg.decomposed.game_name) {
+    ideGame = String(ideCfg.decomposed.game_name).trim().toUpperCase();
+  }
+  if (!ideGame) {
+    const parsedIde = ((detail.parsed && detail.parsed.ide) || []).find(e =>
+      e && String(e.model_name || "").toLowerCase() === modelClean);
+    if (parsedIde && parsedIde.game_name) {
+      ideGame = String(parsedIde.game_name).trim().toUpperCase();
+    }
+  }
+  const cleaned = ideGame.replace(/[^A-Z0-9_]/g, "");
+  if (/^[A-Z0-9_]{2,7}$/.test(cleaned)) return cleaned;
+  if (cleaned.length > 7) return cleaned.slice(0, 7);
+  return fallback;
+}
+
+function refreshOpenFxtNameEditor(detail, model) {
+  const box = document.getElementById("fxtEditContainer");
+  if (!box || box.style.display !== "block") return;
+  const input = document.getElementById("inputFxtName");
+  const hint = document.getElementById("fxtEditKeyHint");
+  if (input) {
+    input.value = activeFxtName || "";
+    input.placeholder = isAddonModel(model)
+      ? window.t("inspect.fxtNameRequired", "Enter vehicle name...")
+      : window.t("inspect.fxtPlaceholderVanilla", "Leave empty to use vanilla in-game name");
+  }
+  if (hint) {
+    const k = (activeFxtKey || inspectorFxtKeyForModel(detail, model) || "").toUpperCase();
+    hint.textContent = k
+      ? `${window.t("inspect.fxtEditKeyHint", "GXT key: ")} ${k}`
+      : window.t("inspect.fxtEditNoKey", "No FXT entry for this vehicle yet; saving will create one.");
+  }
+}
+
 function setupFxtNameEditor() {
   const btnToggle = document.getElementById("btnToggleEditFxtName");
   const box = document.getElementById("fxtEditContainer");
@@ -2589,10 +2646,7 @@ function setupFxtNameEditor() {
       input.focus();
     }
     if (hint) {
-      const ideCfg = detail && detail.config && detail.config.ide;
-      const ideGame = (ideCfg && ideCfg.decomposed && ideCfg.decomposed.game_name)
-        ? String(ideCfg.decomposed.game_name).toUpperCase() : "";
-      const k = activeFxtKey || ideGame || ((activeMod && activeMod.target_model) || "").toUpperCase();
+      const k = activeFxtKey || inspectorFxtKeyForModel(detail, model);
       hint.textContent = k
         ? `${window.t("inspect.fxtEditKeyHint", "GXT key: ")} ${k}`
         : window.t("inspect.fxtEditNoKey", "No FXT entry for this vehicle yet; saving will create one.");
@@ -2603,10 +2657,7 @@ function setupFxtNameEditor() {
     const detail = currentInspectorDetail;
     const modDir = (detail && (detail.mod_dir || detail.mod_dir_full)) || (currentInspectorSummary && currentInspectorSummary.full_path) || "";
     const model = ((activeMod && activeMod.target_model) || (detail && detail.target_model) || "").toLowerCase();
-    const ideCfg = detail && detail.config && detail.config.ide;
-    const ideGame = (ideCfg && ideCfg.decomposed && ideCfg.decomposed.game_name)
-      ? String(ideCfg.decomposed.game_name).toUpperCase() : "";
-    const key = (activeFxtKey || ideGame || model.toUpperCase() || "").toUpperCase();
+    const key = (activeFxtKey || inspectorFxtKeyForModel(detail, model) || "").toUpperCase();
     const name = (input.value || "").trim();
     if (!modDir) {
       showToast(window.t("toast.selectModFirst", "Please select a vehicle from the list first"), "error");
@@ -3696,7 +3747,7 @@ function renderInspectorVehicleView(model) {
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = `switcher-tab-btn ${mLower === modelClean ? 'active' : ''}`;
-        btn.innerHTML = `<span>🚗 ${vName}</span> <small style="opacity:0.75;">(${m.toUpperCase()})</small>`;
+        btn.innerHTML = `<span>🚗 ${escapeHtml(vName)}</span> <small style="opacity:0.75;">(${escapeHtml(m.toUpperCase())})</small>`;
         btn.addEventListener("click", () => {
           renderInspectorVehicleView(mLower);
           showToast(window.t("inspect.switchCarSuccess", "Switched to live configs for [{0}]").replace("{0}", m.toUpperCase()), "info");
@@ -3764,8 +3815,7 @@ function renderInspectorVehicleView(model) {
   if (detail.parsed && detail.parsed.fxt && detail.parsed.fxt.length > 0) {
     // Match this vehicle's own entry: model code or its IDE game name.
     // The old fxt[0] fallback leaked other cars' names into multi-car packs.
-    const ideGame = (ideCfg && ideCfg.decomposed && ideCfg.decomposed.game_name)
-      ? String(ideCfg.decomposed.game_name).toLowerCase() : "";
+    const ideGame = inspectorFxtKeyForModel(detail, modelClean).toLowerCase();
     const fxtKeys = [modelClean];
     if (ideGame && !fxtKeys.includes(ideGame)) fxtKeys.push(ideGame);
     const fxtMatched = detail.parsed.fxt.find(f => f && f.key && fxtKeys.includes(f.key.toLowerCase()));
@@ -3777,6 +3827,7 @@ function renderInspectorVehicleView(model) {
     }
   }
   document.getElementById("targetVanillaName").textContent = displayName;
+  refreshOpenFxtNameEditor(detail, modelClean);
   const shopRaw = v && v.shop ? String(v.shop).trim() : "";
   const shopWrap = document.getElementById("identityShopWrap");
   const shopEl = document.getElementById("targetShopName");
@@ -5441,6 +5492,7 @@ function setupInstaller() {
 
         const payload = {
           inspect_dir: currentInspectData.inspect_dir,
+          inspection_id: currentInspectData.inspection_id,
           target_category: targetCategory,
           author_folder: document.getElementById("installAuthorFolder") ? document.getElementById("installAuthorFolder").value.trim() : "",
           folder_name: subfolder,
@@ -5523,11 +5575,17 @@ function setupInstaller() {
             const cr = await fetch(`/api/ids/check?id=${aid}`);
             const cd = await cr.json();
             const occ = cd && cd.result;
-            if (cd.success && occ && !occ.is_free && ((occ.name || "").toLowerCase() !== am)) {
+            if (!cr.ok || !cd.success || !occ || typeof occ.is_free !== "boolean") {
+              throw new Error("Invalid ID check response");
+            }
+            if (!occ.is_free && ((occ.name || "").toLowerCase() !== am)) {
               showToast(window.t("install.addonIdConflict", "Addon vehicle {0}: ID {1} unusable: {2}").replace("{0}", am.toUpperCase()).replace("{1}", aid).replace("{2}", occ.name || ""), "error");
               return;
             }
-          } catch (e) {}
+          } catch (e) {
+            showToast(window.t("install.addonIdCheckFailed", "Unable to verify addon vehicle IDs. Installation was stopped; try again after the ID scan is available."), "error");
+            return;
+          }
         }
         // FLA killable ceiling: warn (not block) when exceeding the ini limit
         const killCap = await ensureKillableLimit();
@@ -7131,7 +7189,7 @@ function renderWizardStepsTrack() {
 
     chip.className = `wizard-step-chip ${stateClass}`;
     const skipMark = v.skip ? (loc({ en: " (Skip)" })) : "";
-    chip.innerHTML = `<span>${pos + 1}. ${v.vanilla_name}${skipMark}</span>`;
+    chip.innerHTML = `<span>${pos + 1}. ${escapeHtml(v.vanilla_name)}${skipMark}</span>`;
     chip.addEventListener("click", () => {
       loadWizardVehicleToForm(idx);
     });

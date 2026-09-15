@@ -222,6 +222,19 @@ test('install rechecks previously safe IDs before posting', async () => {
   assert.ok(!h.calls.includes('/api/installer/install'));
 });
 
+test('addon ID verification failure stops installation instead of failing open', async () => {
+  const h = setup(); h.render([]); await h.flush();
+  h.ctx.collectAddonIdAssignments = () => ({ newcar: 12093 });
+  h.ctx.fetch = async url => {
+    h.calls.push(url);
+    if (url.startsWith('/api/ids/check')) throw new Error('scan unavailable');
+    return response({ is_free: true });
+  };
+  await h.node('btnExecuteInstall').emit('click');
+  assert.ok(!h.calls.includes('/api/installer/install'));
+  assert.match(h.toasts.at(-1)[0], /Unable to verify addon vehicle IDs/);
+});
+
 test('valid IDs are submitted and edits during confirmation cancel that submission', async () => {
   const h = setup(); h.render(); await h.flush(); let posted;
   h.ctx.fetch = async (url, options) => {

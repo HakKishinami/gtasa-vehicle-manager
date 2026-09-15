@@ -380,6 +380,39 @@ test('mod cards show a vehicle-type icon tile', async () => {
   assert.deepEqual(e.errors, []);
 });
 
+test('FXT and mod metadata are escaped before card HTML rendering', async () => {
+  const e = setup();
+  const html = fs.readFileSync(path.join(web, 'index.html'), 'utf8');
+  for (const match of html.matchAll(/\bid="([^"]+)"/g)) e.node(match[1]);
+  e.run(fs.readFileSync(path.join(web, 'app.js'), 'utf8'));
+  e.run('updatePartitionFolderBar = () => {}; updateModCountBadges = () => {};');
+  const grid = e.node('modGrid', {});
+  const attack = '<img src=x onerror="globalThis.__fxtExecuted=1">';
+  const mods = [{
+    name: attack, author: attack, rel_path: attack, full_path: 'X:\\Evil',
+    mod_type: 'addon', is_addon: true, target_model: 'evilcar',
+    target_models: ['evilcar', 'safe_car'],
+    target_vehicles: [
+      {model: 'evilcar', name: attack, id: 12093, type: 'car', is_addon: true},
+      {model: 'safe_car', name: 'Safe Car', id: 12094, type: 'car', is_addon: true},
+    ],
+    has_handling: false, has_carcols: false, fla_has_audio: false,
+    total_tuning_parts: 0, has_shopping_risk: false, fla_special: null,
+  }];
+  e.run('globalThis.__fxtExecuted = 0');
+  e.run(`renderModGrid(${JSON.stringify(mods)})`);
+
+  assert.equal(grid.children.length, 1);
+  const rendered = grid.children[0].innerHTML;
+  assert.equal(e.run('globalThis.__fxtExecuted'), 0);
+  assert.ok(!rendered.includes('<img'), rendered);
+  assert.ok(rendered.includes('&lt;img'), rendered);
+  assert.ok(rendered.includes('&quot;'), rendered);
+  assert.equal(e.run(`escapeHtml(${JSON.stringify(attack)})`),
+    '&lt;img src=x onerror=&quot;globalThis.__fxtExecuted=1&quot;&gt;');
+  assert.deepEqual(e.errors, []);
+});
+
 test('card density toggle switches layout and persists', async () => {
   const e = setup();
   const html = fs.readFileSync(path.join(web, 'index.html'), 'utf8');

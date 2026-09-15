@@ -1690,13 +1690,39 @@ class ConfigMerger:
         }
 
     def delete_tuning_part(self, model: str, part_name: str) -> Dict[str, Any]:
+        """Delete one vehicle's tuning reference as an atomic edit."""
+        target_files = [
+            os.path.join(self.shadow_dir, "carmods.dat"),
+            os.path.join(self.shadow_dir, "veh_mods.ide"),
+            os.path.join(self.shadow_dir, "shopping.dat"),
+        ]
+        pre_existing = {path for path in target_files if os.path.exists(path)}
+        snapshot_dir = self.backup_manager.start_snapshot(
+            action_name=f"delete_tuning_{(model or 'vehicle').strip().lower()}",
+            description=f"Delete tuning part {(part_name or '').strip().lower()}"
+        )
+        try:
+            result = self._delete_tuning_part_impl(model, part_name)
+        except Exception as exc:
+            result = {"success": False, "error": f"Failed to delete tuning part: {exc}"}
+        finally:
+            snapshot_dir = self.backup_manager.finish_snapshot() or snapshot_dir
+
+        if not result.get("success"):
+            rollback_errors = self._rollback_merge(snapshot_dir, pre_existing, target_files)
+            result["rolled_back"] = not rollback_errors
+            if rollback_errors:
+                result.setdefault("errors", []).extend(rollback_errors)
+                result["error"] = (result.get("error", "") + "; " + "; ".join(rollback_errors)).strip("; ")
+        self._invalidate_id_cache()
+        return result
+
+    def _delete_tuning_part_impl(self, model: str, part_name: str) -> Dict[str, Any]:
         """
-        Completely delete a tuning part from the active vehicle setup:
+        Delete a tuning part from one active vehicle setup:
         1. Remove the part token from carmods.dat vehicle mods line.
-        2. Remove any mirror pairs involving the part from carmods.dat link section.
-        3. Remove the object definition line from shadow veh_mods.ide (if defined).
-        4. Remove any fallback entry from shadow shopping.dat (if present).
-        Creates timestamped backups (.bak) before modifying any shadow file.
+        2. If no other vehicle references it, remove its link, object definition,
+           and shopping entries. Shared global records remain intact.
         """
         model_clean = (model or "").strip().lower()
         part_clean = (part_name or "").strip().lower()
@@ -1707,12 +1733,35 @@ class ConfigMerger:
             return {"success": False, "error": "Missing part name parameter"}
 
         # 1. Update carmods.dat
-        self._ensure_shadow_file("carmods.dat")
+        if not self._ensure_shadow_file("carmods.dat"):
+            return {"success": False, "error": "Unable to create the active carmods.dat shadow copy"}
         carmods_path = os.path.join(self.shadow_dir, "carmods.dat")
+        part_referenced_elsewhere = False
         if os.path.exists(carmods_path):
             self._backup(carmods_path)
             with open(carmods_path, "r", encoding="utf-8-sig", errors="ignore") as f:
                 carmods_lines = f.readlines()
+
+            # Global tuning definitions belong to the part, not to one vehicle.
+            # Determine sharing before editing the target row so another car's
+            # reference cannot be invalidated by this deletion.
+            _scan_in_mods = False
+            for line in carmods_lines:
+                stripped = line.strip()
+                if stripped.lower() == "mods":
+                    _scan_in_mods = True
+                    continue
+                if stripped.lower() == "end":
+                    _scan_in_mods = False
+                    continue
+                if not _scan_in_mods:
+                    continue
+                if stripped.startswith(("#", ";", "//")):
+                    continue
+                parts = [p.strip().lower() for p in stripped.split(",") if p.strip()]
+                if parts and parts[0] != model_clean and part_clean in parts[1:]:
+                    part_referenced_elsewhere = True
+                    break
 
             new_carmods_lines = []
             in_mods = False
@@ -1744,7 +1793,7 @@ class ConfigMerger:
                             new_carmods_lines.append(f"{model_clean}\n")
                         continue
 
-                if in_link:
+                if in_link and not part_referenced_elsewhere:
                     parts = [p.strip() for p in stripped.split(",") if p.strip()]
                     if len(parts) >= 2 and (parts[0].lower() == part_clean or parts[1].lower() == part_clean):
                         continue
@@ -1755,7 +1804,7 @@ class ConfigMerger:
 
         # 2. Update shadow veh_mods.ide (remove definition line)
         veh_mods_path = os.path.join(self.shadow_dir, "veh_mods.ide")
-        if os.path.exists(veh_mods_path):
+        if not part_referenced_elsewhere and os.path.exists(veh_mods_path):
             self._backup(veh_mods_path)
             with open(veh_mods_path, "r", encoding="utf-8-sig", errors="ignore") as f:
                 vm_lines = f.readlines()
@@ -1782,7 +1831,7 @@ class ConfigMerger:
 
         # 3. Update shadow shopping.dat (remove fallback item if present)
         shopping_path = os.path.join(self.shadow_dir, "shopping.dat")
-        if os.path.exists(shopping_path):
+        if not part_referenced_elsewhere and os.path.exists(shopping_path):
             self._backup(shopping_path)
             with open(shopping_path, "r", encoding="utf-8-sig", errors="ignore") as f:
                 shop_lines = f.readlines()
@@ -1800,15 +1849,12 @@ class ConfigMerger:
 
             write_text_atomic(shopping_path, new_shop_lines)
 
-        # 4. Refresh IdManager cache
-        if self.tuning_mgr.id_mgr:
-            self.tuning_mgr.id_mgr.scan_all_ides(force_refresh=True)
-
-        # 5. Return updated vehicle configs
+        # 4. Return updated vehicle configs
         active_configs = self.get_vehicle_active_configs(model_clean)
         return {
             "success": True,
             "model": model_clean,
             "deleted_part": part_clean,
+            "shared_part_preserved": part_referenced_elsewhere,
             "active_configs": active_configs
         }
