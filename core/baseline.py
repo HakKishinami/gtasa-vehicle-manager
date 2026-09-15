@@ -9,6 +9,7 @@ import shutil
 import time
 from typing import Dict, Any, List, Optional
 from .backup_manager import BackupManager
+from .atomic_io import write_bytes_atomic
 
 DEFAULT_GAME_PATH = ""
 DEFAULT_DATA_FOLDER = "Modded Cars"
@@ -207,3 +208,208 @@ class BaselineManager:
             "backup_created": backup_path,
             "message": f"{filename} successfully reverted to vanilla baseline."
         }
+
+    ALLOWED_DATA_EXTENSIONS = (".dat", ".cfg", ".ide", ".ini", ".txt", ".fxt")
+
+    def get_data_copies_list(self) -> Dict[str, Any]:
+        """List available sources (Vanilla and modloader folders) and their data files."""
+        if not self.is_valid_game_path():
+            return {
+                "valid": False,
+                "error": "Specified GTA SA path is invalid or missing gta_sa.exe / data folder",
+                "folders": []
+            }
+
+        folders = []
+        # 1. ModLoader folders (e.g. Modded Cars, Addon Cars, etc.)
+        for folder_name in self.list_modloader_folders():
+            folder_path = os.path.join(self.game_path, "modloader", folder_name)
+            files = []
+            if os.path.isdir(folder_path):
+                known = set()
+                # Standard known data files first
+                for item in DATA_FILES:
+                    fname = item["name"]
+                    known.add(fname.lower())
+                    fpath = os.path.join(folder_path, fname)
+                    exists = os.path.exists(fpath)
+                    files.append({
+                        "name": fname,
+                        "exists": exists,
+                        "size": os.path.getsize(fpath) if exists else 0,
+                        "essential": item.get("essential", False)
+                    })
+                # Check for other valid config files in folder
+                try:
+                    for entry in sorted(os.listdir(folder_path), key=lambda s: s.lower()):
+                        if entry.lower() not in known and any(entry.lower().endswith(ext) for ext in self.ALLOWED_DATA_EXTENSIONS):
+                            fpath = os.path.join(folder_path, entry)
+                            if os.path.isfile(fpath):
+                                files.append({
+                                    "name": entry,
+                                    "exists": True,
+                                    "size": os.path.getsize(fpath),
+                                    "essential": False
+                                })
+                except Exception:
+                    pass
+
+            folders.append({
+                "id": folder_name,
+                "name": folder_name,
+                "is_vanilla": False,
+                "path": folder_path,
+                "rel_path": os.path.join("modloader", folder_name),
+                "files": files
+            })
+
+        # 2. Vanilla data folder (Read-Only)
+        vanilla_files = []
+        for item in DATA_FILES:
+            fname = item["name"]
+            vpath = os.path.join(self.game_path, item["vanilla_rel"])
+            if not os.path.exists(vpath) and fname == "veh_mods.ide":
+                alt = os.path.join(self.game_path, "data", "veh_mods.ide")
+                if os.path.exists(alt):
+                    vpath = alt
+            exists = os.path.exists(vpath)
+            vanilla_files.append({
+                "name": fname,
+                "exists": exists,
+                "size": os.path.getsize(vpath) if exists else 0,
+                "essential": item.get("essential", False)
+            })
+
+        folders.append({
+            "id": "vanilla",
+            "name": "Vanilla data/ (Read-Only)",
+            "is_vanilla": True,
+            "path": os.path.join(self.game_path, "data"),
+            "rel_path": "data",
+            "files": vanilla_files
+        })
+
+        return {
+            "valid": True,
+            "folders": folders,
+            "default_folder": self.data_folder or DEFAULT_DATA_FOLDER
+        }
+
+    def read_data_file(self, folder: str, filename: str) -> Dict[str, Any]:
+        """Read text content of a config file from vanilla or modloader folder."""
+        if not self.is_valid_game_path():
+            return {"success": False, "error": "Game directory is invalid"}
+
+        clean_fname = os.path.basename(filename.strip())
+        if not clean_fname:
+            return {"success": False, "error": "Filename is required"}
+
+        is_vanilla = (folder.lower() in ("vanilla", "data", "vanilla data/"))
+        if is_vanilla:
+            v_rel = None
+            for item in DATA_FILES:
+                if item["name"].lower() == clean_fname.lower():
+                    v_rel = item["vanilla_rel"]
+                    break
+            if v_rel:
+                file_path = os.path.join(self.game_path, v_rel)
+                if not os.path.exists(file_path) and clean_fname.lower() == "veh_mods.ide":
+                    alt = os.path.join(self.game_path, "data", "veh_mods.ide")
+                    if os.path.exists(alt):
+                        file_path = alt
+            else:
+                file_path = os.path.join(self.game_path, "data", clean_fname)
+            is_readonly = True
+        else:
+            clean_folder = self._sanitize_folder_name(folder)
+            target_dir = os.path.join(self.game_path, "modloader", clean_folder)
+            file_path = os.path.join(target_dir, clean_fname)
+            is_readonly = False
+
+        if not os.path.exists(file_path) or not os.path.isfile(file_path):
+            return {"success": False, "error": f"File does not exist: {clean_fname}"}
+
+        detected_codec = "utf-8"
+        try:
+            from .parser import detect_text_encoding, read_text_file_safe
+            with open(file_path, "rb") as bf:
+                raw_bytes = bf.read()
+            detected_codec = detect_text_encoding(raw_bytes) or "utf-8"
+            content = read_text_file_safe(file_path)
+        except Exception as err:
+            return {"success": False, "error": f"Failed to read file: {str(err)}"}
+
+        lines = content.splitlines()
+        rel = os.path.relpath(file_path, self.game_path) if self.game_path else file_path
+
+        return {
+            "success": True,
+            "folder": folder,
+            "filename": clean_fname,
+            "path": file_path,
+            "rel_path": rel,
+            "encoding": detected_codec,
+            "is_vanilla": is_vanilla,
+            "is_readonly": is_readonly,
+            "content": content,
+            "lines": len(lines),
+            "size": os.path.getsize(file_path)
+        }
+
+    def save_data_file(self, folder: str, filename: str, content: str) -> Dict[str, Any]:
+        """Save text content to a shadow file inside modloader. Vanilla data is protected."""
+        if not self.is_valid_game_path():
+            return {"success": False, "error": "Game directory is invalid"}
+
+        if folder.lower() in ("vanilla", "data", "vanilla data/"):
+            return {"success": False, "error": "Vanilla data files are strictly protected and read-only."}
+
+        clean_fname = os.path.basename(filename.strip())
+        if not clean_fname or not any(clean_fname.lower().endswith(ext) for ext in self.ALLOWED_DATA_EXTENSIONS):
+            return {"success": False, "error": f"Invalid or disallowed file type: {clean_fname}"}
+
+        clean_folder = self._sanitize_folder_name(folder)
+        modloader_dir = os.path.join(self.game_path, "modloader")
+        target_dir = os.path.join(modloader_dir, clean_folder)
+
+        # Path traversal guard
+        try:
+            norm_target_dir = os.path.normpath(target_dir)
+            norm_modloader = os.path.normpath(modloader_dir)
+            if not norm_target_dir.startswith(norm_modloader):
+                return {"success": False, "error": "Target path outside modloader directory is forbidden."}
+        except Exception:
+            return {"success": False, "error": "Invalid target path."}
+
+        target_path = os.path.join(target_dir, clean_fname)
+        os.makedirs(target_dir, exist_ok=True)
+
+        # 1. Automatic backup of existing file
+        backup_path = ""
+        if os.path.exists(target_path):
+            try:
+                backup_path = self.backup_manager.backup_file(target_path) or ""
+            except Exception:
+                pass
+
+        # 2. Normalize content (strip BOM if present, ensure standard CRLF line endings)
+        clean_content = content.lstrip("\ufeff")
+        clean_content = clean_content.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
+        raw_bytes = clean_content.encode("utf-8")
+
+        # 3. Atomic write
+        try:
+            write_bytes_atomic(target_path, raw_bytes)
+        except Exception as err:
+            return {"success": False, "error": f"Failed to write file atomically: {str(err)}"}
+
+        return {
+            "success": True,
+            "message": f"Saved {clean_fname} successfully.",
+            "folder": clean_folder,
+            "filename": clean_fname,
+            "backup_created": backup_path,
+            "lines": len(clean_content.splitlines()),
+            "size": len(raw_bytes)
+        }
+

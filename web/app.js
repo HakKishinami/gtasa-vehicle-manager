@@ -42,6 +42,7 @@ document.addEventListener("DOMContentLoaded", () => {
   setupFxtNameEditor();
   setupTuningPartControls();
   setupRenameModControls();
+  setupDataCopiesModule();
 });
 
 // ---------------- Language & Internationalization ----------------
@@ -114,6 +115,8 @@ function setupTabs() {
             discardInspectorContext(false);
           }
         }
+      } else if (targetId === "dataCopiesTab") {
+        loadDataCopiesView();
       }
     });
   });
@@ -763,6 +766,600 @@ document.getElementById("btnSyncAllBaseline").addEventListener("click", async ()
     showToast(loc({ en: "Sync failed" }), "error");
   }
 });
+
+// ---------------- Data Copies & Config Studio ----------------
+
+let dataCopiesFolders = [];
+let dataCopiesCurrentFolder = "";
+let dataCopiesCurrentFile = "";
+let dataCopiesCurrentContent = "";
+let dataCopiesIsDirty = false;
+let dataCopiesIsReadOnly = false;
+let dataCopiesFindMatches = [];
+let dataCopiesFindIndex = -1;
+
+function setupDataCopiesModule() {
+  const folderSelect = document.getElementById("dataCopyFolderSelect");
+  const saveBtn = document.getElementById("btnSaveDataCopy");
+  const reloadBtn = document.getElementById("btnReloadDataCopy");
+  const toggleFindBtn = document.getElementById("btnToggleDataCopyFind");
+  const findInput = document.getElementById("dataCopyFindInput");
+  const findCloseBtn = document.getElementById("btnDataCopyFindClose");
+  const findNextBtn = document.getElementById("btnDataCopyFindNext");
+  const findPrevBtn = document.getElementById("btnDataCopyFindPrev");
+  const textarea = document.getElementById("dataCopyTextarea");
+  const lineNumbers = document.getElementById("dataCopyLineNumbers");
+
+  if (folderSelect) {
+    folderSelect.addEventListener("change", async () => {
+      const nextFolder = folderSelect.value;
+      if (dataCopiesIsDirty) {
+        const discard = confirm(t("datacopy.confirmUnsaved", "You have unsaved changes in {0}. Do you want to discard them?", dataCopiesCurrentFile || "file"));
+        if (!discard) {
+          folderSelect.value = dataCopiesCurrentFolder;
+          return;
+        }
+      }
+      dataCopiesCurrentFolder = nextFolder;
+      renderDataCopyFilePills(nextFolder);
+      const folderObj = dataCopiesFolders.find(f => f.id === nextFolder);
+      const files = (folderObj && folderObj.files) || [];
+      const firstFile = files.find(f => f.exists) || files[0];
+      if (firstFile) {
+        await loadDataCopyFile(nextFolder, firstFile.name);
+      } else {
+        clearDataCopyEditor();
+      }
+    });
+  }
+
+  if (saveBtn) {
+    saveBtn.addEventListener("click", () => saveCurrentDataCopyFile());
+  }
+
+  if (reloadBtn) {
+    reloadBtn.addEventListener("click", () => {
+      if (!dataCopiesCurrentFolder || !dataCopiesCurrentFile) return;
+      if (dataCopiesIsDirty) {
+        const discard = confirm(t("datacopy.confirmUnsaved", "You have unsaved changes in {0}. Do you want to discard them?", dataCopiesCurrentFile));
+        if (!discard) return;
+      }
+      loadDataCopyFile(dataCopiesCurrentFolder, dataCopiesCurrentFile);
+    });
+  }
+
+  if (toggleFindBtn) {
+    toggleFindBtn.addEventListener("click", () => {
+      const widget = document.getElementById("dataCopyFindWidget");
+      if (widget && widget.style.display !== "none") {
+        closeDataCopyFindWidget();
+      } else {
+        openDataCopyFindWidget();
+      }
+    });
+  }
+
+  if (findCloseBtn) {
+    findCloseBtn.addEventListener("click", () => closeDataCopyFindWidget());
+  }
+
+  if (findNextBtn) {
+    findNextBtn.addEventListener("click", () => {
+      stepDataCopyFind(1);
+      if (findInput) findInput.focus();
+    });
+  }
+
+  if (findPrevBtn) {
+    findPrevBtn.addEventListener("click", () => {
+      stepDataCopyFind(-1);
+      if (findInput) findInput.focus();
+    });
+  }
+
+  if (findInput) {
+    findInput.addEventListener("input", () => performDataCopyFind());
+    findInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        stepDataCopyFind(e.shiftKey ? -1 : 1);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        closeDataCopyFindWidget();
+      }
+    });
+  }
+
+  if (textarea) {
+    textarea.addEventListener("input", () => {
+      if (dataCopiesIsReadOnly) return;
+      dataCopiesIsDirty = (textarea.value !== dataCopiesCurrentContent);
+      updateDataCopyStatusBadge();
+      updateDataCopyLineNumbers();
+      updateDataCopyFooterStats();
+      if (document.getElementById("dataCopyFindWidget")?.style.display !== "none") {
+        performDataCopyFind();
+      }
+    });
+
+    textarea.addEventListener("scroll", () => {
+      if (lineNumbers) lineNumbers.scrollTop = textarea.scrollTop;
+      renderDataCopyHighlights();
+    });
+
+    textarea.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        saveCurrentDataCopyFile();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        openDataCopyFindWidget();
+      } else if (e.key === "Tab") {
+        e.preventDefault();
+        if (dataCopiesIsReadOnly) return;
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        textarea.value = textarea.value.substring(0, start) + "    " + textarea.value.substring(end);
+        textarea.selectionStart = textarea.selectionEnd = start + 4;
+        textarea.dispatchEvent(new Event("input"));
+      }
+    });
+  }
+
+  // Global shortcut: when in dataCopiesTab, Ctrl+F opens find
+  window.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+      const tab = document.getElementById("dataCopiesTab");
+      if (tab && tab.classList.contains("active")) {
+        e.preventDefault();
+        openDataCopyFindWidget();
+      }
+    }
+  });
+}
+
+async function loadDataCopiesView(targetFolder = null, targetFile = null) {
+  try {
+    const res = await fetch("/api/data-copies/list");
+    const data = await res.json();
+    if (!res.ok || !data.valid) {
+      showToast(data.error || t("datacopy.noFiles", "No data configuration files found in this folder"), "error");
+      return;
+    }
+    dataCopiesFolders = data.folders || [];
+    const folderSelect = document.getElementById("dataCopyFolderSelect");
+    if (!folderSelect) return;
+
+    folderSelect.innerHTML = "";
+    dataCopiesFolders.forEach(f => {
+      const opt = document.createElement("option");
+      opt.value = f.id;
+      opt.textContent = f.is_vanilla ? t("datacopy.vanilla", "Vanilla data/ (Read-Only)") : `modloader \\ ${f.name}`;
+      folderSelect.appendChild(opt);
+    });
+
+    const activeFolderId = targetFolder || dataCopiesCurrentFolder || data.default_folder || (dataCopiesFolders[0] && dataCopiesFolders[0].id) || "Modded Cars";
+    dataCopiesCurrentFolder = activeFolderId;
+    folderSelect.value = activeFolderId;
+
+    renderDataCopyFilePills(activeFolderId);
+
+    const folderObj = dataCopiesFolders.find(f => f.id === activeFolderId);
+    const files = (folderObj && folderObj.files) || [];
+    const activeFileName = targetFile || dataCopiesCurrentFile || (files.find(f => f.exists) || files[0] || {}).name || "vehicles.ide";
+
+    if (activeFileName) {
+      await loadDataCopyFile(activeFolderId, activeFileName);
+    } else {
+      clearDataCopyEditor();
+    }
+  } catch (err) {
+    showToast(t("datacopy.noFiles", "No data configuration files found in this folder"), "error");
+  }
+}
+
+function renderDataCopyFilePills(folderId) {
+  const container = document.getElementById("dataCopyFilePills");
+  if (!container) return;
+  container.innerHTML = "";
+
+  const folderObj = dataCopiesFolders.find(f => f.id === folderId);
+  const files = (folderObj && folderObj.files) || [];
+
+  files.forEach(f => {
+    const pill = document.createElement("button");
+    pill.type = "button";
+    pill.className = `data-copy-pill${f.name === dataCopiesCurrentFile ? " active" : ""}${!f.exists ? " is-missing" : ""}`;
+    pill.textContent = f.name;
+    if (!f.exists) {
+      pill.title = t("common.notGenerated", "Not created yet");
+    }
+    pill.addEventListener("click", async () => {
+      if (f.name === dataCopiesCurrentFile) return;
+      if (dataCopiesIsDirty) {
+        const discard = confirm(t("datacopy.confirmUnsaved", "You have unsaved changes in {0}. Do you want to discard them?", dataCopiesCurrentFile));
+        if (!discard) return;
+      }
+      await loadDataCopyFile(dataCopiesCurrentFolder, f.name);
+    });
+    container.appendChild(pill);
+  });
+}
+
+async function loadDataCopyFile(folderId, fileName) {
+  dataCopiesCurrentFolder = folderId;
+  dataCopiesCurrentFile = fileName;
+
+  // Highlight active pill
+  document.querySelectorAll(".data-copy-pill").forEach(p => {
+    p.classList.toggle("active", p.textContent.trim() === fileName);
+  });
+
+  const textarea = document.getElementById("dataCopyTextarea");
+  const saveBtn = document.getElementById("btnSaveDataCopy");
+  const pathDisplay = document.getElementById("dataCopyPathDisplay");
+
+  try {
+    const res = await fetch(`/api/data-copies/read?folder=${encodeURIComponent(folderId)}&file=${encodeURIComponent(fileName)}`);
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      showToast(data.error || t("datacopy.noFiles", "Unable to read file"), "error");
+      return;
+    }
+
+    dataCopiesCurrentContent = data.content || "";
+    dataCopiesIsDirty = false;
+    dataCopiesIsReadOnly = Boolean(data.is_readonly);
+
+    if (textarea) {
+      textarea.value = dataCopiesCurrentContent;
+      textarea.readOnly = dataCopiesIsReadOnly;
+      textarea.scrollTop = 0;
+    }
+
+    if (saveBtn) {
+      saveBtn.disabled = dataCopiesIsReadOnly;
+    }
+
+    if (pathDisplay) {
+      pathDisplay.textContent = data.rel_path || data.path || fileName;
+    }
+
+    const encodingDisplay = document.getElementById("dataCopyEncodingDisplay");
+    if (encodingDisplay) {
+      encodingDisplay.textContent = `${(data.encoding || "UTF-8").toUpperCase()} / CRLF`;
+    }
+
+    updateDataCopyStatusBadge();
+    updateDataCopyLineNumbers();
+    updateDataCopyFooterStats();
+    closeDataCopyFindWidget();
+  } catch (err) {
+    showToast(t("datacopy.noFiles", "Unable to read file"), "error");
+  }
+}
+
+function clearDataCopyEditor() {
+  const textarea = document.getElementById("dataCopyTextarea");
+  const pathDisplay = document.getElementById("dataCopyPathDisplay");
+  dataCopiesCurrentContent = "";
+  dataCopiesIsDirty = false;
+  if (textarea) textarea.value = "";
+  if (pathDisplay) pathDisplay.textContent = "--";
+  updateDataCopyStatusBadge();
+  updateDataCopyLineNumbers();
+  updateDataCopyFooterStats();
+}
+
+function updateDataCopyStatusBadge() {
+  const badge = document.getElementById("dataCopyStatusBadge");
+  if (!badge) return;
+  if (dataCopiesIsReadOnly) {
+    badge.className = "badge";
+    badge.style.background = "#1f293d";
+    badge.style.color = "var(--accent-cyan)";
+    badge.textContent = t("datacopy.readOnlyBadge", "🔒 Read-Only");
+  } else if (dataCopiesIsDirty) {
+    badge.className = "badge";
+    badge.style.background = "rgba(245, 158, 11, 0.2)";
+    badge.style.color = "var(--accent-amber, #f59e0b)";
+    badge.textContent = t("datacopy.unsavedBadge", "● Unsaved");
+  } else {
+    badge.className = "badge badge-success";
+    badge.style.background = "";
+    badge.style.color = "";
+    badge.textContent = t("datacopy.savedBadge", "✓ Saved");
+  }
+}
+
+function updateDataCopyLineNumbers() {
+  const lineNumbers = document.getElementById("dataCopyLineNumbers");
+  const textarea = document.getElementById("dataCopyTextarea");
+  if (!lineNumbers || !textarea) return;
+
+  const count = (textarea.value.match(/\n/g) || []).length + 1;
+  const arr = new Array(count);
+  for (let i = 0; i < count; i++) {
+    arr[i] = String(i + 1);
+  }
+  lineNumbers.textContent = arr.join("\n");
+}
+
+function updateDataCopyFooterStats() {
+  const linesEl = document.getElementById("dataCopyLinesDisplay");
+  const charsEl = document.getElementById("dataCopyCharsDisplay");
+  const textarea = document.getElementById("dataCopyTextarea");
+  if (!textarea) return;
+
+  const text = textarea.value;
+  const lineCount = (text.match(/\n/g) || []).length + (text.length > 0 ? 1 : 0);
+  if (linesEl) linesEl.textContent = t("datacopy.linesCount", "{0} lines").replace("{0}", lineCount);
+  if (charsEl) charsEl.textContent = t("datacopy.charsCount", "{0} chars").replace("{0}", text.length);
+}
+
+async function saveCurrentDataCopyFile() {
+  if (dataCopiesIsReadOnly) return;
+  if (!dataCopiesCurrentFolder || !dataCopiesCurrentFile) return;
+
+  const textarea = document.getElementById("dataCopyTextarea");
+  if (!textarea) return;
+  const content = textarea.value;
+
+  const saveBtn = document.getElementById("btnSaveDataCopy");
+  if (saveBtn) saveBtn.disabled = true;
+
+  try {
+    const res = await fetch("/api/data-copies/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        folder: dataCopiesCurrentFolder,
+        file: dataCopiesCurrentFile,
+        content: content
+      })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      showToast(data.error || t("datacopy.saveSuccess", "Failed to save file"), "error");
+      return;
+    }
+
+    dataCopiesCurrentContent = content;
+    dataCopiesIsDirty = false;
+    updateDataCopyStatusBadge();
+    showToast(t("datacopy.saveSuccess", "Saved {0} successfully (Backup created).", dataCopiesCurrentFile), "success");
+  } catch (err) {
+    showToast(t("datacopy.saveSuccess", "Failed to save file"), "error");
+  } finally {
+    if (saveBtn) saveBtn.disabled = dataCopiesIsReadOnly;
+  }
+}
+
+// In-Editor Ctrl+F Find Widget
+function openDataCopyFindWidget() {
+  const widget = document.getElementById("dataCopyFindWidget");
+  const findInput = document.getElementById("dataCopyFindInput");
+  const textarea = document.getElementById("dataCopyTextarea");
+  if (!widget || !findInput) return;
+
+  widget.style.display = "flex";
+  if (textarea && textarea.selectionStart !== textarea.selectionEnd) {
+    const selected = textarea.value.substring(textarea.selectionStart, textarea.selectionEnd).trim();
+    if (selected && !selected.includes("\n") && selected.length < 50) {
+      findInput.value = selected;
+    }
+  }
+  findInput.focus();
+  findInput.select();
+  performDataCopyFind();
+}
+
+let dataCopyMeasureEl = null;
+let dataCopyCharWidthCache = null;
+
+function getDataCopyMeasureEl() {
+  if (!dataCopyMeasureEl && typeof document !== "undefined") {
+    dataCopyMeasureEl = document.createElement("span");
+    dataCopyMeasureEl.style.position = "absolute";
+    dataCopyMeasureEl.style.visibility = "hidden";
+    dataCopyMeasureEl.style.pointerEvents = "none";
+    dataCopyMeasureEl.style.whiteSpace = "pre";
+    dataCopyMeasureEl.style.fontFamily = "'Consolas', 'Fira Code', monospace";
+    dataCopyMeasureEl.style.fontSize = "12px";
+    dataCopyMeasureEl.style.lineHeight = "20px";
+    dataCopyMeasureEl.style.tabSize = "4";
+    document.body.appendChild(dataCopyMeasureEl);
+  }
+  return dataCopyMeasureEl;
+}
+
+function getDataCopyCharWidth() {
+  if (dataCopyCharWidthCache === null) {
+    if (typeof document === "undefined") return 7.2;
+    const el = getDataCopyMeasureEl();
+    if (!el) return 7.2;
+    el.textContent = "MMMMMMMMMM";
+    const w = el.getBoundingClientRect().width;
+    dataCopyCharWidthCache = (w > 0 ? w / 10 : 7.2);
+  }
+  return dataCopyCharWidthCache;
+}
+
+function measureDataCopyTextWidth(text) {
+  if (!text) return 0;
+  if (!text.includes("\t")) {
+    return text.length * getDataCopyCharWidth();
+  }
+  if (typeof document === "undefined") return text.length * 7.2;
+  const el = getDataCopyMeasureEl();
+  if (!el) return text.length * 7.2;
+  el.textContent = text;
+  return el.getBoundingClientRect().width;
+}
+
+function renderDataCopyHighlights() {
+  const overlay = document.getElementById("dataCopyHighlightOverlay");
+  const textarea = document.getElementById("dataCopyTextarea");
+  if (!overlay || !textarea) return;
+
+  if (!dataCopiesFindMatches || !dataCopiesFindMatches.length || dataCopiesFindIndex < 0) {
+    overlay.innerHTML = "";
+    return;
+  }
+
+  const text = textarea.value;
+  const scrollTop = textarea.scrollTop;
+  const scrollLeft = textarea.scrollLeft;
+  const clientHeight = textarea.clientHeight;
+  const clientWidth = textarea.clientWidth;
+  const lineHeight = 20;
+  const paddingTop = 12;
+  const paddingLeft = 14;
+
+  let html = "";
+
+  // 1. Active line highlight strip
+  const activeMatch = dataCopiesFindMatches[dataCopiesFindIndex];
+  if (activeMatch) {
+    const activeLineStart = text.lastIndexOf("\n", activeMatch.start - 1) + 1;
+    const activeLineIndex = (text.substring(0, activeLineStart).match(/\n/g) || []).length;
+    const activeLineTop = paddingTop + (activeLineIndex * lineHeight) - scrollTop;
+    if (activeLineTop >= -lineHeight && activeLineTop <= clientHeight) {
+      html += `<div class="data-copy-active-line-strip" style="top:${activeLineTop}px; height:${lineHeight}px;"></div>`;
+    }
+  }
+
+  // 2. Word highlight bounding boxes
+  let rendered = 0;
+  for (let i = 0; i < dataCopiesFindMatches.length && rendered < 150; i++) {
+    const m = dataCopiesFindMatches[i];
+    const isActive = (i === dataCopiesFindIndex);
+
+    const mLineStart = text.lastIndexOf("\n", m.start - 1) + 1;
+    const mLineIndex = (text.substring(0, mLineStart).match(/\n/g) || []).length;
+    const mLineTop = paddingTop + (mLineIndex * lineHeight) - scrollTop;
+
+    // Check vertical visibility
+    if (mLineTop < -lineHeight || mLineTop > clientHeight) {
+      continue;
+    }
+
+    const prefix = text.substring(mLineStart, m.start);
+    const word = text.substring(m.start, m.end);
+    const charX = measureDataCopyTextWidth(prefix);
+    const charWidth = measureDataCopyTextWidth(word);
+    const boxLeft = paddingLeft + charX - scrollLeft;
+
+    // Check horizontal visibility
+    if (boxLeft + charWidth < 0 || boxLeft > clientWidth) {
+      continue;
+    }
+
+    const cls = isActive ? "data-copy-word-highlight is-active" : "data-copy-word-highlight is-secondary";
+    html += `<div class="${cls}" style="top:${mLineTop}px; left:${boxLeft}px; width:${Math.max(4, charWidth)}px; height:${lineHeight}px;"></div>`;
+    rendered++;
+  }
+
+  overlay.innerHTML = html;
+}
+
+function closeDataCopyFindWidget() {
+  const widget = document.getElementById("dataCopyFindWidget");
+  if (widget) widget.style.display = "none";
+  dataCopiesFindMatches = [];
+  dataCopiesFindIndex = -1;
+  const overlay = document.getElementById("dataCopyHighlightOverlay");
+  if (overlay) overlay.innerHTML = "";
+  const textarea = document.getElementById("dataCopyTextarea");
+  if (textarea) textarea.focus();
+}
+
+function performDataCopyFind() {
+  const findInput = document.getElementById("dataCopyFindInput");
+  const countEl = document.getElementById("dataCopyFindCount");
+  const textarea = document.getElementById("dataCopyTextarea");
+  if (!findInput || !textarea) return;
+
+  const query = findInput.value;
+  if (!query) {
+    dataCopiesFindMatches = [];
+    dataCopiesFindIndex = -1;
+    if (countEl) countEl.textContent = t("datacopy.noMatches", "No matches");
+    renderDataCopyHighlights();
+    return;
+  }
+
+  const text = textarea.value.toLowerCase();
+  const q = query.toLowerCase();
+  const matches = [];
+  let pos = 0;
+  while ((pos = text.indexOf(q, pos)) !== -1) {
+    matches.push({ start: pos, end: pos + q.length });
+    pos += q.length;
+  }
+
+  dataCopiesFindMatches = matches;
+  if (!matches.length) {
+    dataCopiesFindIndex = -1;
+    if (countEl) countEl.textContent = t("datacopy.noMatches", "No matches");
+    renderDataCopyHighlights();
+    return;
+  }
+
+  const cursor = textarea.selectionStart;
+  let idx = matches.findIndex(m => m.start >= cursor);
+  if (idx === -1) idx = 0;
+  dataCopiesFindIndex = idx;
+  jumpToDataCopyMatch(idx);
+}
+
+function stepDataCopyFind(direction) {
+  if (!dataCopiesFindMatches.length) return;
+  const total = dataCopiesFindMatches.length;
+  let nextIdx = (dataCopiesFindIndex + direction + total) % total;
+  dataCopiesFindIndex = nextIdx;
+  jumpToDataCopyMatch(nextIdx);
+}
+
+function jumpToDataCopyMatch(index) {
+  const textarea = document.getElementById("dataCopyTextarea");
+  const countEl = document.getElementById("dataCopyFindCount");
+  if (!textarea || index < 0 || index >= dataCopiesFindMatches.length) return;
+
+  const match = dataCopiesFindMatches[index];
+  textarea.setSelectionRange(match.start, match.end);
+
+  const text = textarea.value;
+  const lineStart = text.lastIndexOf("\n", match.start - 1) + 1;
+  const linesBefore = (text.substring(0, lineStart).match(/\n/g) || []).length;
+  const lineHeight = 20;
+
+  // Vertical scroll: keep match visible with comfortable headroom
+  const targetScrollTop = Math.max(0, (linesBefore * lineHeight) - 120);
+  textarea.scrollTop = targetScrollTop;
+
+  // Horizontal scroll: if match is horizontally outside view, bring it in
+  const prefix = text.substring(lineStart, match.start);
+  const word = text.substring(match.start, match.end);
+  const charX = measureDataCopyTextWidth(prefix);
+  const charWidth = measureDataCopyTextWidth(word);
+  const paddingLeft = 14;
+
+  const currentLeft = textarea.scrollLeft;
+  const viewportWidth = textarea.clientWidth;
+  const matchLeft = paddingLeft + charX;
+  const matchRight = matchLeft + charWidth;
+
+  if (matchLeft < currentLeft + 30 || matchRight > currentLeft + viewportWidth - 30) {
+    textarea.scrollLeft = Math.max(0, matchLeft - 60);
+  }
+
+  if (countEl) {
+    countEl.textContent = t("datacopy.matchCount", "{0} of {1}", index + 1, dataCopiesFindMatches.length);
+  }
+
+  renderDataCopyHighlights();
+}
 
 // ---------------- Mod Library ----------------
 

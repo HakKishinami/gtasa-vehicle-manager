@@ -911,6 +911,21 @@ class ModManagerHandler(BaseHTTPRequestHandler):
             self._send_json(result, status=200 if result["success"] else 400)
             return
 
+        elif path == "/api/data-copies/list":
+            res = baseline_mgr.get_data_copies_list()
+            self._send_json(res)
+            return
+
+        elif path == "/api/data-copies/read":
+            folder = query.get("folder", [""])[0].strip()
+            file = query.get("file", [""])[0].strip()
+            if not folder or not file:
+                self._send_error("Missing 'folder' or 'file' query parameter")
+                return
+            res = baseline_mgr.read_data_file(folder, file)
+            self._send_json(res, status=200 if res.get("success") else 400)
+            return
+
         elif path == "/api/installer/authors":
             category = query.get("category", [DATA_FOLDER])[0].strip() or DATA_FOLDER
             authors = installer.get_existing_authors(category)
@@ -1013,6 +1028,25 @@ class ModManagerHandler(BaseHTTPRequestHandler):
                 return
             res = baseline_mgr.revert_to_vanilla(filename)
             self._send_json(res)
+            return
+
+        elif path == "/api/data-copies/save":
+            folder = body.get("folder", "").strip()
+            file = body.get("file", "").strip()
+            content = body.get("content", "")
+            if not folder or not file:
+                self._send_error("Missing 'folder' or 'file' in request body")
+                return
+            res = baseline_mgr.save_data_file(folder, file, content)
+            if res.get("success"):
+                if file.lower().endswith(".ide"):
+                    try:
+                        id_mgr.scan_all_ides(force_refresh=True)
+                    except Exception:
+                        pass
+                self._send_json(res)
+            else:
+                self._send_json(res, status=400)
             return
 
         elif path == "/api/dry-run":

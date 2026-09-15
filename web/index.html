@@ -49,6 +49,9 @@
       <button class="tab-btn" data-tab="inspectorTab">
         <span class="icon">🔬</span> <span data-i18n="nav.inspector">Vehicle Inspector</span>
       </button>
+      <button class="tab-btn" data-tab="dataCopiesTab">
+        <span class="icon">📄</span> <span data-i18n="nav.dataCopies">Data Copies</span>
+      </button>
       <button class="tab-btn" data-tab="baselineTab">
         <span class="icon">🛡️</span> <span data-i18n="nav.baseline">Baseline & Health</span>
       </button>
@@ -530,6 +533,75 @@
               <div class="raw-body source-document-body">
                 <pre id="rawReadmeContent" tabindex="0" aria-label="Source document content" data-i18n-aria-label="sources.contentLabel">No text content available</pre>
               </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB: Data Copies & Config Studio -->
+      <section id="dataCopiesTab" class="tab-panel">
+        <div class="card data-copies-card">
+          <!-- Top compact control / switcher toolbar -->
+          <div class="data-copy-toolbar">
+            <div class="data-copy-toolbar-left">
+              <span class="data-copy-label" data-i18n="datacopy.source">Source:</span>
+              <div class="data-copy-source-wrap">
+                <select id="dataCopyFolderSelect" class="data-copy-select" title="Select source folder for configuration data" data-i18n-title="datacopy.selectFolderTitle"></select>
+              </div>
+              <div class="data-copy-pills-bar" id="dataCopyFilePills">
+                <!-- Populated dynamically by JS (e.g. vehicles.ide, handling.cfg, etc.) -->
+              </div>
+            </div>
+            <div class="data-copy-toolbar-right">
+              <button type="button" class="btn btn-secondary btn-sm" id="btnToggleDataCopyFind" title="Find in file (Ctrl+F)" data-i18n-title="datacopy.btnFindTitle">
+                <span>🔍</span> <span data-i18n="datacopy.btnFind">Find</span>
+              </button>
+              <div class="data-copy-status-wrap">
+                <span id="dataCopyStatusBadge" class="badge badge-success" data-i18n="datacopy.savedBadge">✓ Saved</span>
+              </div>
+              <button type="button" class="btn btn-secondary btn-sm" id="btnReloadDataCopy" title="Discard unsaved edits and reload file" data-i18n-title="datacopy.btnReloadTitle">
+                <span>🔄</span> <span data-i18n="datacopy.btnReload">Reload</span>
+              </button>
+              <button type="button" class="btn btn-primary btn-sm" id="btnSaveDataCopy" title="Save changes (Ctrl+S)" data-i18n-title="datacopy.btnSaveTitle">
+                <span>💾</span> <span data-i18n="datacopy.btnSave">Save</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Main editor & viewer viewport -->
+          <div class="data-copy-editor-wrap">
+            <!-- Floating in-editor Ctrl+F Search Bar -->
+            <div id="dataCopyFindWidget" class="data-copy-find-widget" style="display:none;">
+              <span class="find-icon">🔍</span>
+              <input type="text" id="dataCopyFindInput" class="find-input" placeholder="Find in file..." data-i18n-placeholder="datacopy.findPlaceholder" spellcheck="false">
+              <span id="dataCopyFindCount" class="find-count" data-i18n="datacopy.noMatches">No matches</span>
+              <button type="button" class="find-btn" id="btnDataCopyFindPrev" title="Previous match (Shift+Enter)" data-i18n-title="datacopy.findPrevTitle">▲</button>
+              <button type="button" class="find-btn" id="btnDataCopyFindNext" title="Next match (Enter)" data-i18n-title="datacopy.findNextTitle">▼</button>
+              <button type="button" class="find-btn close-find-btn" id="btnDataCopyFindClose" title="Close search (Esc)" data-i18n-title="datacopy.findCloseTitle">&times;</button>
+            </div>
+
+            <!-- Editor Gutter + Textarea with Highlight Overlay -->
+            <div class="data-copy-editor-grid">
+              <div id="dataCopyLineNumbers" class="data-copy-line-numbers" aria-hidden="true">1</div>
+              <div class="data-copy-textarea-container">
+                <div id="dataCopyHighlightOverlay" class="data-copy-highlight-overlay" aria-hidden="true"></div>
+                <textarea id="dataCopyTextarea" class="data-copy-textarea" spellcheck="false" wrap="off"></textarea>
+              </div>
+            </div>
+          </div>
+
+          <!-- Compact bottom status bar -->
+          <div class="data-copy-footer-bar">
+            <div class="data-copy-footer-left">
+              <span class="footer-icon">📄</span>
+              <code id="dataCopyPathDisplay">--</code>
+            </div>
+            <div class="data-copy-footer-right">
+              <span id="dataCopyLinesDisplay">0 lines</span>
+              <span class="footer-separator">•</span>
+              <span id="dataCopyCharsDisplay">0 chars</span>
+              <span class="footer-separator">•</span>
+              <span class="footer-encoding" id="dataCopyEncodingDisplay">UTF-8 / CRLF</span>
             </div>
           </div>
         </div>
